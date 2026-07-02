@@ -1,0 +1,504 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy2Digit",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 4.9980107497372215,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 4.831607537679299,
+                "50.0" : 4.9980107497372215,
+                "90.0" : 5.164413961795144,
+                "95.0" : 5.164413961795144,
+                "99.0" : 5.164413961795144,
+                "99.9" : 5.164413961795144,
+                "99.99" : 5.164413961795144,
+                "99.999" : 5.164413961795144,
+                "99.9999" : 5.164413961795144,
+                "100.0" : 5.164413961795144
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    5.164413961795144,
+                    4.831607537679299
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy2DigitBaseline",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 17.02658693791403,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 16.7633439667869,
+                "50.0" : 17.02658693791403,
+                "90.0" : 17.28982990904116,
+                "95.0" : 17.28982990904116,
+                "99.0" : 17.28982990904116,
+                "99.9" : 17.28982990904116,
+                "99.99" : 17.28982990904116,
+                "99.999" : 17.28982990904116,
+                "99.9999" : 17.28982990904116,
+                "100.0" : 17.28982990904116
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    17.28982990904116,
+                    16.7633439667869
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy3Digit",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 5.122360443564867,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 5.042571684267352,
+                "50.0" : 5.122360443564867,
+                "90.0" : 5.202149202862383,
+                "95.0" : 5.202149202862383,
+                "99.0" : 5.202149202862383,
+                "99.9" : 5.202149202862383,
+                "99.99" : 5.202149202862383,
+                "99.999" : 5.202149202862383,
+                "99.9999" : 5.202149202862383,
+                "100.0" : 5.202149202862383
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    5.202149202862383,
+                    5.042571684267352
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy3DigitBaseline",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 18.600574665843627,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 18.538840266698287,
+                "50.0" : 18.600574665843627,
+                "90.0" : 18.662309064988968,
+                "95.0" : 18.662309064988968,
+                "99.0" : 18.662309064988968,
+                "99.9" : 18.662309064988968,
+                "99.99" : 18.662309064988968,
+                "99.999" : 18.662309064988968,
+                "99.9999" : 18.662309064988968,
+                "100.0" : 18.662309064988968
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    18.662309064988968,
+                    18.538840266698287
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy5DigitBig",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 5.060589340269457,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 4.918055453900701,
+                "50.0" : 5.060589340269457,
+                "90.0" : 5.203123226638213,
+                "95.0" : 5.203123226638213,
+                "99.0" : 5.203123226638213,
+                "99.9" : 5.203123226638213,
+                "99.99" : 5.203123226638213,
+                "99.999" : 5.203123226638213,
+                "99.9999" : 5.203123226638213,
+                "100.0" : 5.203123226638213
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    5.203123226638213,
+                    4.918055453900701
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.divideBy5DigitBigBaseline",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 16.885026564315115,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 16.424438858823642,
+                "50.0" : 16.885026564315115,
+                "90.0" : 17.34561426980659,
+                "95.0" : 17.34561426980659,
+                "99.0" : 17.34561426980659,
+                "99.9" : 17.34561426980659,
+                "99.99" : 17.34561426980659,
+                "99.999" : 17.34561426980659,
+                "99.9999" : 17.34561426980659,
+                "100.0" : 17.34561426980659
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    17.34561426980659,
+                    16.424438858823642
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.multiplyLargeTaxRate",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 3.7367372790019124,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.448420766559722,
+                "50.0" : 3.7367372790019124,
+                "90.0" : 4.025053791444103,
+                "95.0" : 4.025053791444103,
+                "99.0" : 4.025053791444103,
+                "99.9" : 4.025053791444103,
+                "99.99" : 4.025053791444103,
+                "99.999" : 4.025053791444103,
+                "99.9999" : 4.025053791444103,
+                "100.0" : 4.025053791444103
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    4.025053791444103,
+                    3.448420766559722
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.multiplyLargeTaxRateBaseline",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 13.577811667952808,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 13.161700983671762,
+                "50.0" : 13.577811667952808,
+                "90.0" : 13.993922352233854,
+                "95.0" : 13.993922352233854,
+                "99.0" : 13.993922352233854,
+                "99.9" : 13.993922352233854,
+                "99.99" : 13.993922352233854,
+                "99.999" : 13.993922352233854,
+                "99.9999" : 13.993922352233854,
+                "100.0" : 13.993922352233854
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    13.993922352233854,
+                    13.161700983671762
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.parsePercentage",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 20.91532828807859,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 19.617440066566875,
+                "50.0" : 20.91532828807859,
+                "90.0" : 22.21321650959031,
+                "95.0" : 22.21321650959031,
+                "99.0" : 22.21321650959031,
+                "99.9" : 22.21321650959031,
+                "99.99" : 22.21321650959031,
+                "99.999" : 22.21321650959031,
+                "99.9999" : 22.21321650959031,
+                "100.0" : 22.21321650959031
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    22.21321650959031,
+                    19.617440066566875
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "com.fastpath.bench.BigDecimalBenchmark.parsePercentageBaseline",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-25-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "--patch-module",
+            "java.base=/tmp/java-fastpath/benchmark/build/patches"
+        ],
+        "jdkVersion" : "25.0.3",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "25.0.3+9-2-24.04.2-Ubuntu",
+        "warmupIterations" : 1,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 2,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "primaryMetric" : {
+            "score" : 45.385945906214516,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 44.564911453907676,
+                "50.0" : 45.385945906214516,
+                "90.0" : 46.20698035852135,
+                "95.0" : 46.20698035852135,
+                "99.0" : 46.20698035852135,
+                "99.9" : 46.20698035852135,
+                "99.99" : 46.20698035852135,
+                "99.999" : 46.20698035852135,
+                "99.9999" : 46.20698035852135,
+                "100.0" : 46.20698035852135
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    46.20698035852135,
+                    44.564911453907676
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+
