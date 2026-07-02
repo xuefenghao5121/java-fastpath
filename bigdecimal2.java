@@ -2917,70 +2917,23 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         int oldScale = this.scale;
         if (newScale == oldScale)        // easy case
             return this;
-        // Fast path: compact value, zero check inline (avoids signum() dispatch)
-        if (this.intCompact != INFLATED) {
+        if (this.signum() == 0)            // zero can have any scale
+            return zeroValueOf(newScale);
+        if(this.intCompact!=INFLATED) {
             long rs = this.intCompact;
-            if (rs == 0L)                // zero can have any scale
-                return zeroValueOf(newScale);
             if (newScale > oldScale) {
-                // Increasing scale: multiply by power of 10 (adding trailing zeros)
                 int raise = checkScale((long) newScale - oldScale);
                 if ((rs = longMultiplyPowerTen(rs, raise)) != INFLATED) {
                     return valueOf(rs,newScale);
                 }
                 BigInteger rb = bigMultiplyPowerTen(raise);
                 return new BigDecimal(rb, INFLATED, newScale, (precision > 0) ? precision + raise : 0);
-            } else if (newScale < oldScale) {
-                // Decreasing scale: divide by power of 10 (dropping digits)
+            } else {
+                // newScale < oldScale -- drop some digits
+                // Can't predict the precision due to the effect of rounding.
                 int drop = checkScale((long) oldScale - newScale);
                 if (drop < LONG_TEN_POWERS_TABLE.length) {
-                    // Inline divideAndRound + needIncrement for compact values.
-                    // Eliminates 3 method dispatches: divideAndRound() → needIncrement() → commonNeedIncrement()
-                    long divisor = LONG_TEN_POWERS_TABLE[drop];
-                    long q = rs / divisor;
-                    // ROUND_DOWN: truncation towards zero = Java's / operator
-                    if (roundingMode == ROUND_DOWN)
-                        return valueOf(q, newScale);
-                    long r = rs % divisor;
-                    if (r == 0L) {
-                        // Exact division, no rounding needed
-                        return valueOf(q, newScale);
-                    }
-                    // Determine sign for rounding
-                    boolean sameSign = (rs >= 0) == (divisor > 0); // divisor is always positive here
-                    int qsign = sameSign ? 1 : -1;
-                    // Inline commonNeedIncrement for the most common rounding modes
-                    // cmpFracHalf: compare |2*r| with |divisor|
-                    // Since divisor = 10^drop (max 10^18), and r < divisor,
-                    // 2*r won't overflow for drop <= 18 (divisor <= 10^18 < Long.MAX_VALUE/2)
-                    int cmpFracHalf = Long.compare(Math.abs(r) * 2, divisor);
-                    boolean increment;
-                    switch (roundingMode) {
-                        case ROUND_UP:
-                            increment = true;
-                            break;
-                        case ROUND_CEILING:
-                            increment = qsign > 0;
-                            break;
-                        case ROUND_FLOOR:
-                            increment = qsign < 0;
-                            break;
-                        case ROUND_HALF_UP:
-                            increment = cmpFracHalf >= 0;
-                            break;
-                        case ROUND_HALF_DOWN:
-                            increment = cmpFracHalf > 0;
-                            break;
-                        case ROUND_HALF_EVEN:
-                            increment = cmpFracHalf > 0 || (cmpFracHalf == 0 && (q & 1L) != 0L);
-                            break;
-                        case ROUND_UNNECESSARY:
-                            throw new ArithmeticException("Rounding necessary");
-                        default:
-                            // Fallback to standard path for unexpected modes
-                            return divideAndRound(this.intCompact, divisor, newScale, roundingMode, newScale);
-                    }
-                    return valueOf(increment ? q + qsign : q, newScale);
+                    return divideAndRound(rs, LONG_TEN_POWERS_TABLE[drop], newScale, roundingMode, newScale);
                 } else {
                     return divideAndRound(this.inflated(), bigTenToThe(drop), newScale, roundingMode, newScale);
                 }
