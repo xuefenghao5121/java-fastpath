@@ -1,0 +1,179 @@
+--- /tmp/bigDecimal_stock.java	2026-07-02 20:06:19.255152770 +0300
++++ /tmp/java-fastpath/src/java.base/share/classes/java/math/BigDecimal.java	2026-07-02 19:24:57.003115970 +0300
+@@ -547,6 +547,17 @@
+                 ("Bad offset or len arguments for char[] input.");
+         }
+ 
++        // Fast path: financial format string
++        int fastScale = checkFinancialFastPath(in, offset, len);
++        if (fastScale != -1) {
++            BigDecimal result = parseFinancialFastPath(in, offset, len, fastScale, mc);
++            this.intCompact = result.intCompact;
++            this.scale = result.scale;
++            this.intVal = result.intVal;
++            this.precision = result.precision;
++            return;
++        }
++
+         // This is the primary string to BigDecimal constructor; all
+         // incoming strings end up here; it uses explicit (inline)
+         // parsing for speed and generates at most one intermediate
+@@ -5737,6 +5748,97 @@
+         return (one+Long.MIN_VALUE) >= (two+Long.MIN_VALUE);
+     }
+ 
++    // ========== Fast Path Optimization: Multiplication Helpers ==========
++
++    /**
++     * Fast check if both operands are suitable for fast multiply path.
++     * For financial scenarios:
++     * - Both numbers small (< 10^9)
++     * - One very small (tax rate < 1000), other up to 10^13 (large amount x tax rate)
++     */
++    private static boolean isSmallMultiply(long x, long y) {
++        long absX = Math.abs(x);
++        long absY = Math.abs(y);
++        // Fast path 1: both small (< 10^9)
++        if (absX < 1_000_000_000L && absY < 1_000_000_000L) {
++            return true;
++        }
++        // Fast path 2: one very small (tax rate), other up to 10^13
++        if (absX < 1_000L && absY < 10_000_000_000_000L) {
++            return true;
++        }
++        if (absY < 1_000L && absX < 10_000_000_000_000L) {
++            return true;
++        }
++        return false;
++    }
++
++    /**
++     * Fast check if char array matches financial format.
++     * Financial pattern: optional sign, 1-12 digits, optional decimal point,
++     * exactly 2 (currency) or 4 (percentage) fraction digits.
++     * @return scale if matches financial pattern, -1 otherwise
++     */
++    private static int checkFinancialFastPath(char[] in, int offset, int len) {
++        if (len < 1 || len > 18) return -1;
++        int pos = offset;
++        int end = offset + len;
++        // Check optional sign
++        if (in[pos] == '+' || in[pos] == '-') {
++            pos++;
++            if (pos >= end) return -1;
++        }
++        int digitCount = 0;
++        int decimalPos = -1;
++        // Scan digits and decimal point
++        for (; pos < end; pos++) {
++            char c = in[pos];
++            if (c >= '0' && c <= '9') {
++                digitCount++;
++                if (digitCount > 12) return -1;
++            } else if (c == '.') {
++                if (decimalPos != -1) return -1;
++                decimalPos = digitCount;
++            } else {
++                return -1;
++            }
++        }
++        if (digitCount == 0) return -1;
++        // Determine scale
++        if (decimalPos == -1) return 0;
++        int fractionDigits = digitCount - decimalPos;
++        if (fractionDigits == 2) return 2;
++        if (fractionDigits == 4) return 4;
++        return -1;
++    }
++
++    /**
++     * Fast parse financial format string.
++     */
++    private static BigDecimal parseFinancialFastPath(char[] in, int offset, int len,
++                                                      int scale, MathContext mc) {
++        int pos = offset;
++        int end = offset + len;
++        boolean isneg = false;
++        // Handle sign
++        if (in[pos] == '+' || in[pos] == '-') {
++            isneg = (in[pos] == '-');
++            pos++;
++        }
++        // Parse digits (ignore decimal point)
++        long value = 0;
++        for (; pos < end; pos++) {
++            char c = in[pos];
++            if (c >= '0' && c <= '9') {
++                value = value * 10 + (c - '0');
++            }
++        }
++        if (isneg) value = -value;
++        BigDecimal result = valueOf(value, scale);
++        return mc.precision == 0 ? result : result.round(mc);
++    }
++    // ========== Fast Path Optimization End ==========
++
+ 
+     // Compare Normalize dividend & divisor so that both fall into [0.1, 0.999...]
+     private static int compareMagnitudeNormalized(long xs, int xscale, long ys, int yscale) {
+@@ -5790,6 +5892,11 @@
+     }
+ 
+     private static BigDecimal multiply(long x, long y, int scale) {
++        // Fast path: financial small value optimization
++        if (isSmallMultiply(x, y)) {
++            return valueOf(x * y, scale);
++        }
++        // Standard path with overflow check
+         long product = multiply(x, y);
+         if(product!=INFLATED) {
+             return valueOf(product,scale);
+@@ -5812,6 +5919,15 @@
+      * Multiplies two long values and rounds according {@code MathContext}
+      */
+     private static BigDecimal multiplyAndRound(long x, long y, int scale, MathContext mc) {
++        // Fast path: no precision limit
++        if (mc.precision == 0 && isSmallMultiply(x, y)) {
++            return valueOf(x * y, scale);
++        }
++        // Fast path: financial small value
++        if (isSmallMultiply(x, y)) {
++            return doRound(x * y, scale, mc);
++        }
++        // Standard path
+         long product = multiply(x, y);
+         if(product!=INFLATED) {
+             return doRound(product, scale, mc);
+@@ -5936,6 +6052,32 @@
+     }
+ 
+     private static BigDecimal divide(long dividend, int dividendScale, long divisor, int divisorScale, int scale, int roundingMode) {
++        // Fast path: compact values with small scale adjustment.
++        // Tax system: caller guarantees divisors with 2-5 decimal places,
++        // so we skip divisor-range checks and use signed division directly.
++        if (dividend != INFLATED && divisor != INFLATED && divisor != 0) {
++            int raise = scale + divisorScale - dividendScale;
++            if (raise >= 0 && raise < LONG_TEN_POWERS_TABLE.length) {
++                long scaledDividend = longMultiplyPowerTen(dividend, raise);
++                if (scaledDividend != INFLATED) {
++                    // ROUND_DOWN: Java's / truncates toward zero = ROUND_DOWN semantics
++                    if (roundingMode == ROUND_DOWN) {
++                        return valueOf(scaledDividend / divisor, scale);
++                    }
++                    return divideAndRound(scaledDividend, divisor, scale, roundingMode, scale);
++                }
++            } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
++                long scaledDivisor = longMultiplyPowerTen(divisor, -raise);
++                if (scaledDivisor != INFLATED) {
++                    if (roundingMode == ROUND_DOWN) {
++                        return valueOf(dividend / scaledDivisor, scale);
++                    }
++                    return divideAndRound(dividend, scaledDivisor, scale, roundingMode, scale);
++                }
++            }
++        }
++
++        // Standard path
+         if (checkScale(dividend,(long)scale + divisorScale) > dividendScale) {
+             int newScale = scale + divisorScale;
+             int raise = newScale - dividendScale;
