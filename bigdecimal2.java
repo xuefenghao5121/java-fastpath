@@ -1421,6 +1421,18 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     public BigDecimal add(BigDecimal augend) {
         if (this.intCompact != INFLATED) {
             if ((augend.intCompact != INFLATED)) {
+                // Fast path: both compact, same scale — inline overflow-checked addition
+                // Eliminates 3 method dispatches: add(long,int,long,int) → add(long,long,int) → add(long,long)
+                if (this.scale == augend.scale) {
+                    long xs = this.intCompact;
+                    long ys = augend.intCompact;
+                    long sum = xs + ys;
+                    // Hacker's Delight 2-12: overflow iff both operand signs match but result differs
+                    if (((xs ^ sum) & (ys ^ sum)) >= 0) {
+                        return BigDecimal.valueOf(sum, scale);
+                    }
+                    return new BigDecimal(BigInteger.valueOf(xs).add(ys), scale);
+                }
                 return add(this.intCompact, this.scale, augend.intCompact, augend.scale);
             } else {
                 return add(this.intCompact, this.scale, augend.intVal, augend.scale);
@@ -1566,6 +1578,19 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     public BigDecimal subtract(BigDecimal subtrahend) {
         if (this.intCompact != INFLATED) {
             if ((subtrahend.intCompact != INFLATED)) {
+                // Fast path: both compact, same scale — inline overflow-checked subtraction
+                // Avoids negation + recursive add dispatch chain
+                if (this.scale == subtrahend.scale) {
+                    long xs = this.intCompact;
+                    long ys = subtrahend.intCompact;
+                    long diff = xs - ys;
+                    // Hacker's Delight 2-12 (subtraction variant):
+                    // overflow iff operand signs differ but result sign matches minuend
+                    if (((xs ^ ys) & (xs ^ diff)) >= 0) {
+                        return BigDecimal.valueOf(diff, scale);
+                    }
+                    return new BigDecimal(BigInteger.valueOf(xs).subtract(ys), scale);
+                }
                 return add(this.intCompact, this.scale, -subtrahend.intCompact, subtrahend.scale);
             } else {
                 return add(this.intCompact, this.scale, subtrahend.intVal.negate(), subtrahend.scale);
@@ -5257,12 +5282,22 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     private static BigDecimal add(final long xs, int scale1, final long ys, int scale2) {
         long sdiff = (long) scale1 - scale2;
         if (sdiff == 0) {
-            return add(xs, ys, scale1);
+            // Inlined add(xs, ys, scale1): overflow-checked addition without method dispatch
+            long sum = xs + ys;
+            if (((xs ^ sum) & (ys ^ sum)) >= 0) {
+                return BigDecimal.valueOf(sum, scale1);
+            }
+            return new BigDecimal(BigInteger.valueOf(xs).add(ys), scale1);
         } else if (sdiff < 0) {
             int raise = checkScale(xs,-sdiff);
             long scaledX = longMultiplyPowerTen(xs, raise);
             if (scaledX != INFLATED) {
-                return add(scaledX, ys, scale2);
+                // Inlined add(scaledX, ys, scale2): eliminates recursive call
+                long sum = scaledX + ys;
+                if (((scaledX ^ sum) & (ys ^ sum)) >= 0) {
+                    return BigDecimal.valueOf(sum, scale2);
+                }
+                return new BigDecimal(BigInteger.valueOf(scaledX).add(ys), scale2);
             } else {
                 BigInteger bigsum = bigMultiplyPowerTen(xs,raise).add(ys);
                 return ((xs^ys)>=0) ? // same sign test
@@ -5273,7 +5308,12 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
             int raise = checkScale(ys,sdiff);
             long scaledY = longMultiplyPowerTen(ys, raise);
             if (scaledY != INFLATED) {
-                return add(xs, scaledY, scale1);
+                // Inlined add(xs, scaledY, scale1): eliminates recursive call
+                long sum = xs + scaledY;
+                if (((xs ^ sum) & (scaledY ^ sum)) >= 0) {
+                    return BigDecimal.valueOf(sum, scale1);
+                }
+                return new BigDecimal(BigInteger.valueOf(xs).add(scaledY), scale1);
             } else {
                 BigInteger bigsum = bigMultiplyPowerTen(ys,raise).add(xs);
                 return ((xs^ys)>=0) ?
