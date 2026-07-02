@@ -6100,59 +6100,48 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         if (dividend != INFLATED && divisor != INFLATED && divisor != 0 &&
             Math.abs(dividend) < 10_000_000_000_000_000L &&
             Math.abs(divisor) < 100_000L &&
-            Math.abs(scaleDiff) <= 4) {
+            scaleDiff >= -4 && scaleDiff <= 4) {
 
             int qsign = ((dividend < 0) == (divisor < 0)) ? 1 : -1;
             long absDividend = Math.abs(dividend);
             long absDivisor = Math.abs(divisor);
 
-            // Case 1: scales equal
-            if (scaleDiff == 0) {
-                long q = absDividend / absDivisor;
-                if (roundingMode == ROUND_DOWN) {
+            // Correct scale adjustment: R = (dividend / divisor) × 10^(scale - scaleDiff)
+            // raise > 0: multiply dividend by 10^raise, then divide
+            // raise < 0: multiply divisor by 10^(-raise), then divide
+            // raise == 0: divide directly, result is at target scale
+            int raise = scale - scaleDiff;
+
+            if (raise >= 0) {
+                // Multiply dividend by 10^raise to achieve target scale
+                long scaledDividend = longMultiplyPowerTen(absDividend, raise);
+                if (scaledDividend != INFLATED) {
+                    long q = scaledDividend / absDivisor;
+                    if (roundingMode == ROUND_DOWN) {
+                        return valueOf(q * qsign, scale);
+                    }
+                    long r = scaledDividend % absDivisor;
+                    if (r != 0) {
+                        boolean increment = needIncrement(absDivisor, roundingMode, qsign, q, r);
+                        return valueOf((increment ? q + qsign : q) * qsign, scale);
+                    }
                     return valueOf(q * qsign, scale);
                 }
-                long r = absDividend % absDivisor;
-                if (r != 0) {
-                    boolean increment = needIncrement(absDivisor, roundingMode, qsign, q, r);
-                    return valueOf((increment ? q + qsign : q) * qsign, scale);
-                }
-                return valueOf(q * qsign, scale);
-            }
-
-            // Case 2: scaleDiff > 0 (dividend has more fraction digits)
-            if (scaleDiff > 0) {
-                long scaledDivisor = longMultiplyPowerTen(absDivisor, scaleDiff);
+            } else {
+                // Multiply divisor by 10^(-raise) to achieve target scale
+                long scaledDivisor = longMultiplyPowerTen(absDivisor, -raise);
                 if (scaledDivisor != INFLATED) {
                     long q = absDividend / scaledDivisor;
                     if (roundingMode == ROUND_DOWN) {
-                        return createDivideResult(q * qsign, scale - scaleDiff, scale, roundingMode);
+                        return valueOf(q * qsign, scale);
                     }
                     long r = absDividend % scaledDivisor;
                     if (r != 0) {
                         boolean increment = needIncrement(scaledDivisor, roundingMode, qsign, q, r);
-                        return createDivideResult((increment ? q + qsign : q) * qsign,
-                                                  scale - scaleDiff, scale, roundingMode);
+                        return valueOf((increment ? q + qsign : q) * qsign, scale);
                     }
-                    return createDivideResult(q * qsign, scale - scaleDiff, scale, roundingMode);
+                    return valueOf(q * qsign, scale);
                 }
-            }
-
-            // Case 3: scaleDiff < 0 (divisor has more fraction digits)
-            int adjust = -scaleDiff;
-            long scaledDividend = longMultiplyPowerTen(absDividend, adjust);
-            if (scaledDividend != INFLATED) {
-                long q = scaledDividend / absDivisor;
-                if (roundingMode == ROUND_DOWN) {
-                    return createDivideResult(q * qsign, scale + adjust, scale, roundingMode);
-                }
-                long r = scaledDividend % absDivisor;
-                if (r != 0) {
-                    boolean increment = needIncrement(absDivisor, roundingMode, qsign, q, r);
-                    return createDivideResult((increment ? q + qsign : q) * qsign,
-                                              scale + adjust, scale, roundingMode);
-                }
-                return createDivideResult(q * qsign, scale + adjust, scale, roundingMode);
             }
         }
 
