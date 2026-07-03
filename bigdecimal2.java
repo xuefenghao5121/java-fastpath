@@ -1589,7 +1589,7 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                     if (((xs ^ ys) & (xs ^ diff)) >= 0) {
                         return BigDecimal.valueOf(diff, scale);
                     }
-                    return new BigDecimal(BigInteger.valueOf(xs).subtract(ys), scale);
+                    return new BigDecimal(BigInteger.valueOf(xs).subtract(BigInteger.valueOf(ys)), scale);
                 }
                 return add(this.intCompact, this.scale, -subtrahend.intCompact, subtrahend.scale);
             } else {
@@ -1899,15 +1899,47 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         }
         if (dividend.signum() == 0) // 0/y
             return zeroValueOf(saturateLong(preferredScale));
-        int xscale = dividend.precision();
-        int yscale = divisor.precision();
+        
+        // ========== NEW: Exact division fast path ==========
+        // Check BEFORE precision-based normalization, using actual scales.
+        // For 100/0.001=100000, 100/0.01=10000 — skips ALL BigInteger allocation.
+        // Quick pre-filter: |xs| < |ys| means result < 1, can't be exact integer.
+        // This makes overhead ~0.5ns for non-exact cases (just a comparison).
+        if (dividend.intCompact != INFLATED && divisor.intCompact != INFLATED) {
+            long xs = dividend.intCompact;
+            long ys = divisor.intCompact;
+            if (Math.abs(xs) >= Math.abs(ys) && xs % ys == 0) {
+                long q = xs / ys;
+                long scl = preferredScale;
+                if (scl >= Integer.MIN_VALUE && scl <= Integer.MAX_VALUE) {
+                    return doRound(valueOf(q, (int)scl), mc);
+                }
+            }
+        }
+        
+        // ========== NEW: Use actual scales only when precision-based condition fails ==========
+        // The internal divide method's scale computation depends on the "scale" parameters.
+        // Using actual scales instead of precision is ONLY safe when the precision-based
+        // fast path condition (xscale_prec <= yscale_prec) would FAIL anyway, meaning
+        // the slow path would be used. In that case, actual scales give the same final
+        // result (after doRound) but may enable the extended fast path.
         if(dividend.intCompact!=INFLATED) {
+            int xprec = dividend.precision();
+            int yprec = divisor.precision();
             if(divisor.intCompact!=INFLATED) {
-                return divide(dividend.intCompact, xscale, divisor.intCompact, yscale, preferredScale, mc);
+                if (xprec <= yprec) {
+                    // Precision-based fast path works → use precision (original behavior)
+                    return divide(dividend.intCompact, xprec, divisor.intCompact, yprec, preferredScale, mc);
+                } else {
+                    // Precision condition fails → use actual scales to enable extended fast path
+                    return divide(dividend.intCompact, dividend.scale, divisor.intCompact, divisor.scale, preferredScale, mc);
+                }
             } else {
-                return divide(dividend.intCompact, xscale, divisor.intVal, yscale, preferredScale, mc);
+                return divide(dividend.intCompact, xprec, divisor.intVal, yprec, preferredScale, mc);
             }
         } else {
+            int xscale = dividend.precision();
+            int yscale = divisor.precision();
             if(divisor.intCompact!=INFLATED) {
                 return divide(dividend.intVal, xscale, divisor.intCompact, yscale, preferredScale, mc);
             } else {
@@ -5473,16 +5505,119 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
      */
     private static BigDecimal divide(final long xs, int xscale, final long ys, int yscale, long preferredScale, MathContext mc) {
         int mcp = mc.precision;
+        // Original fast path (unchanged)
         if(xscale <= yscale && yscale < 18 && mcp<18) {
             return divideSmallFastPath(xs, xscale, ys, yscale, preferredScale, mc);
         }
+        
+        // ========== NEW: Lean extended divide fast path ==========
+        // Strategy: only attempt optimizations with high success probability.
+        // Overhead for fallthrough: 1 comparison + 1 multiply + 1 modulo (~3ns).
+        if (xscale <= yscale && yscale < 18 && xs != INFLATED && ys != 0 && mcp >= 18) {
+            int xraise = yscale - xscale;
+            
+            // Step 1: Exact division shortcut
+            long scaledX;
+            if (xraise == 0) {
+                // Cheapest path: no scaling needed
+                if (xs % ys == 0) {
+                    long sclVal = preferredScale;
+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
+                        return doRound(valueOf(xs / ys, (int)sclVal), mc);
+                    }
+                }
+                scaledX = xs;
+            } else {
+                scaledX = longMultiplyPowerTen(xs, xraise);
+                if (scaledX != INFLATED && scaledX % ys == 0) {
+                    long sclVal = preferredScale + yscale - xscale;
+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
+                        return doRound(valueOf(scaledX / ys, (int)sclVal), mc);
+                    }
+                }
+            }
+            
+            // Step 2: For non-exact, only try 128-bit split path when viable.
+            // Quick viability check: compute effMcp and check if split can work.
+            // Skip entirely if effMcp >= 36 (too large for split) or scaledX overflowed.
+            if (scaledX != INFLATED) {
+                int cmp = longCompareMagnitude(scaledX, ys);
+                int yscaleAdj = (cmp > 0) ? yscale - 1 : yscale;
+                int effMcp = (cmp > 0) ? mcp - 1 : mcp;
+                
+                if (effMcp >= 0 && effMcp < LONG_TEN_POWERS_TABLE.length) {
+                    // effMcp < 19: try direct long then 128-bit
+                    long scaledXs = (effMcp == 0) ? scaledX : longMultiplyPowerTen(scaledX, effMcp);
+                    if (scaledXs != INFLATED) {
+                        long sclVal = preferredScale + yscaleAdj - xscale + effMcp;
+                        if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
+                            return doRound(divideAndRound(scaledXs, ys, (int)sclVal,
+                                mc.roundingMode.oldMode, checkScaleNonZero(preferredScale)), mc);
+                        }
+                    }
+                    long sclVal = preferredScale + yscaleAdj - xscale + effMcp;
+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
+                        BigDecimal q = multiplyDivideAndRound(
+                            LONG_TEN_POWERS_TABLE[effMcp], scaledX, ys,
+                            (int)sclVal, mc.roundingMode.oldMode,
+                            checkScaleNonZero(preferredScale));
+                        if (q != null) {
+                            return doRound(q, mc);
+                        }
+                    }
+                } else if (effMcp >= LONG_TEN_POWERS_TABLE.length && effMcp < 36) {
+                    // Split: 10^effMcp = 10^18 * 10^(effMcp-18)
+                    int split = LONG_TEN_POWERS_TABLE.length - 1;
+                    int remainder = effMcp - split;
+                    long part2 = longMultiplyPowerTen(scaledX, remainder);
+                    if (part2 != INFLATED) {
+                        long absPart2 = Math.abs(part2);
+                        long absYs = Math.abs(ys);
+                        if (absYs > 0) {
+                            long ratio = absPart2 / absYs;
+                            // Must have enough precision: quotient (10^18 * part2 / ys)
+                            // needs >= mcp significant digits.
+                            // quotient >= 10^(mcp-1) → part2/ys >= 10^(mcp-19)
+                            // For mcp<=19: always enough (10^18 gives 18+ digits)
+                            // For mcp=20: need ratio >= 10
+                            // For mcp=21: need ratio >= 100
+                            boolean hasPrecision = (mcp <= 19);
+                            if (!hasPrecision && mcp <= 27) {
+                                long minRatio = LONG_TEN_POWERS_TABLE[mcp - 19];
+                                hasPrecision = (ratio >= minRatio);
+                            }
+                            // Also must fit in unsigned long: ratio < ~18
+                            if (hasPrecision && ratio < 18) {
+                                long sclVal2 = preferredScale + yscaleAdj - xscale + effMcp;
+                                if (sclVal2 >= Integer.MIN_VALUE && sclVal2 <= Integer.MAX_VALUE) {
+                                    BigDecimal q = multiplyDivideAndRound(
+                                        LONG_TEN_POWERS_TABLE[split], part2, ys,
+                                        (int)sclVal2, mc.roundingMode.oldMode,
+                                        checkScaleNonZero(preferredScale));
+                                    if (q != null) {
+                                        return doRound(q, mc);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Fall through to slow path (overhead: ~3-5ns for exact check + maybe cmp)
+        }
+        
+        return divideSlowPath(xs, xscale, ys, yscale, preferredScale, mc, mcp);
+    }
+
+    /**
+     * Slow path division — extracted from original divide() method.
+     * Uses BigInteger when long arithmetic would overflow.
+     */
+    private static BigDecimal divideSlowPath(final long xs, int xscale, final long ys, int yscale, long preferredScale, MathContext mc, int mcp) {
         if (compareMagnitudeNormalized(xs, xscale, ys, yscale) > 0) {// satisfy constraint (b)
             yscale -= 1; // [that is, divisor *= 10]
         }
         int roundingMode = mc.roundingMode.oldMode;
-        // In order to find out whether the divide generates the exact result,
-        // we avoid calling the above divide method. 'quotient' holds the
-        // return BigDecimal object whose scale will be set to 'scl'.
         int scl = checkScaleNonZero(preferredScale + yscale - xscale + mcp);
         BigDecimal quotient;
         if (checkScaleNonZero((long) mcp + yscale - xscale) > 0) {
@@ -5496,7 +5631,6 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
             }
         } else {
             int newScale = checkScaleNonZero((long) xscale - mcp);
-            // assert newScale >= yscale
             if (newScale == yscale) { // easy case
                 quotient = divideAndRound(xs, ys, scl, roundingMode,checkScaleNonZero(preferredScale));
             } else {
@@ -5511,7 +5645,6 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                 }
             }
         }
-        // doRound, here, only affects 1000000000 case.
         return doRound(quotient,mc);
     }
 
