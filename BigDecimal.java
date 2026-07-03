@@ -5758,32 +5758,16 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     private static BigDecimal multiplyDivideAndRound(long dividend0, long dividend1, long divisor, int scale, int roundingMode,
                                                      int preferredScale) {
         int qsign = Long.signum(dividend0)*Long.signum(dividend1)*Long.signum(divisor);
-        dividend0 = Math.abs(dividend0);
-        dividend1 = Math.abs(dividend1);
-        divisor = Math.abs(divisor);
-        // multiply dividend0 * dividend1
-        long d0_hi = dividend0 >>> 32;
-        long d0_lo = dividend0 & LONG_MASK;
-        long d1_hi = dividend1 >>> 32;
-        long d1_lo = dividend1 & LONG_MASK;
-        long product = d0_lo * d1_lo;
-        long d0 = product & LONG_MASK;
-        long d1 = product >>> 32;
-        product = d0_hi * d1_lo + d1;
-        d1 = product & LONG_MASK;
-        long d2 = product >>> 32;
-        product = d0_lo * d1_hi + d1;
-        d1 = product & LONG_MASK;
-        d2 += product >>> 32;
-        long d3 = d2>>>32;
-        d2 &= LONG_MASK;
-        product = d0_hi*d1_hi + d2;
-        d2 = product & LONG_MASK;
-        d3 = ((product>>>32) + d3) & LONG_MASK;
-        final long dividendHi = make64(d3,d2);
-        final long dividendLo = make64(d1,d0);
+        // Use Math.unsignedMultiplyHigh (JDK 18+) for 128-bit multiplication.
+        // ARM AArch64: compiles to UMULH instruction (3-5 cycles)
+        // x86-64: compiler reuses MUL high result (same instruction as low 64)
+        // Replaces schoolbook 4-multiply + carry chain (~20 instructions)
+        long a = Math.abs(dividend0);
+        long b = Math.abs(dividend1);
+        final long dividendHi = Math.unsignedMultiplyHigh(a, b);
+        final long dividendLo = a * b;
         // divide
-        return divideAndRound128(dividendHi, dividendLo, divisor, qsign, scale, roundingMode, preferredScale);
+        return divideAndRound128(dividendHi, dividendLo, Math.abs(divisor), qsign, scale, roundingMode, preferredScale);
     }
 
     private static final long DIV_NUM_BASE = (1L<<32); // Number base (32 bits).
@@ -6238,6 +6222,23 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                         return valueOf(scaledDividend / divisor, scale);
                     }
                     return divideAndRound(scaledDividend, divisor, scale, roundingMode, scale);
+                }
+                // 128-bit direct path: when long multiply overflows, try 128-bit
+                // multiplication via Math.unsignedMultiplyHigh before falling back
+                // to BigInteger. On ARM this generates UMULH (3-5 cycles), avoiding
+                // BigInteger allocation + Knuth division on BigInteger.
+                long tenPow = LONG_TEN_POWERS_TABLE[raise];
+                int qsign128 = Long.signum(dividend) * Long.signum(divisor);
+                long absDiv128 = Math.abs(dividend);
+                long absDsr128 = Math.abs(divisor);
+                long lo128 = absDiv128 * tenPow;
+                long hi128 = Math.unsignedMultiplyHigh(absDiv128, tenPow);
+                if (Long.compareUnsigned(hi128, absDsr128) < 0) {
+                    BigDecimal q = divideAndRound128(hi128, lo128, absDsr128, qsign128,
+                                                     scale, roundingMode, scale);
+                    if (q != null) {
+                        return q;
+                    }
                 }
             } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
                 long scaledDivisor = longMultiplyPowerTen(divisor, -raise);
