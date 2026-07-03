@@ -1711,6 +1711,53 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     public BigDecimal divide(BigDecimal divisor, int scale, int roundingMode) {
         if (roundingMode < ROUND_UP || roundingMode > ROUND_UNNECESSARY)
             throw new IllegalArgumentException("Invalid rounding mode");
+
+        // Inline fast path: both values compact, 64-bit arithmetic sufficient.
+        // Collapses 4 method calls (divide→divide(long,...)→longMultiplyPowerTen→divideAndRound)
+        // into 1, saving ~3 method calls + enabling JIT to inline the public API.
+        if (this.intCompact != INFLATED && divisor.intCompact != INFLATED && divisor.intCompact != 0) {
+            int raise = scale + divisor.scale - this.scale;
+            if (raise >= 0 && raise < LONG_TEN_POWERS_TABLE.length) {
+                long dividend = this.intCompact;
+                long divisorVal = divisor.intCompact;
+                // Inline longMultiplyPowerTen: overflow check via THRESHOLDS_TABLE
+                if (Math.abs(dividend) <= THRESHOLDS_TABLE[raise]) {
+                    long scaledDividend = dividend * LONG_TEN_POWERS_TABLE[raise];
+                    // Inline divideAndRound(long, long, int, int, int)
+                    long q = scaledDividend / divisorVal;
+                    if (roundingMode == ROUND_DOWN) {
+                        return valueOf(q, scale);
+                    }
+                    long r = scaledDividend % divisorVal;
+                    if (r == 0) {
+                        return valueOf(q, scale);
+                    }
+                    int qsign = ((scaledDividend < 0) == (divisorVal < 0)) ? 1 : -1;
+                    boolean increment = needIncrement(divisorVal, roundingMode, qsign, q, r);
+                    return valueOf(increment ? q + qsign : q, scale);
+                }
+                // Overflow → fall through to 128-bit path
+            } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
+                long dividend = this.intCompact;
+                long divisorVal = divisor.intCompact;
+                if (Math.abs(divisorVal) <= THRESHOLDS_TABLE[-raise]) {
+                    long scaledDivisor = divisorVal * LONG_TEN_POWERS_TABLE[-raise];
+                    long q = dividend / scaledDivisor;
+                    if (roundingMode == ROUND_DOWN) {
+                        return valueOf(q, scale);
+                    }
+                    long r = dividend % scaledDivisor;
+                    if (r == 0) {
+                        return valueOf(q, scale);
+                    }
+                    int qsign = ((dividend < 0) == (scaledDivisor < 0)) ? 1 : -1;
+                    boolean increment = needIncrement(scaledDivisor, roundingMode, qsign, q, r);
+                    return valueOf(increment ? q + qsign : q, scale);
+                }
+            }
+        }
+
+        // Original path for BigInteger or overflow cases
         if (this.intCompact != INFLATED) {
             if ((divisor.intCompact != INFLATED)) {
                 return divide(this.intCompact, this.scale, divisor.intCompact, divisor.scale, scale, roundingMode);
@@ -2962,10 +3009,19 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                 return new BigDecimal(rb, INFLATED, newScale, (precision > 0) ? precision + raise : 0);
             } else {
                 // newScale < oldScale -- drop some digits
-                // Can't predict the precision due to the effect of rounding.
+                // Inline divideAndRound for common case (drop < 19)
                 int drop = checkScale((long) oldScale - newScale);
                 if (drop < LONG_TEN_POWERS_TABLE.length) {
-                    return divideAndRound(rs, LONG_TEN_POWERS_TABLE[drop], newScale, roundingMode, newScale);
+                    long divisor = LONG_TEN_POWERS_TABLE[drop];
+                    long q = rs / divisor;
+                    if (roundingMode == ROUND_DOWN)
+                        return valueOf(q, newScale);
+                    long r = rs % divisor;
+                    if (r == 0)
+                        return valueOf(q, newScale);
+                    int qsign = ((rs < 0) == (divisor < 0)) ? 1 : -1;
+                    boolean increment = needIncrement(divisor, roundingMode, qsign, q, r);
+                    return valueOf(increment ? q + qsign : q, newScale);
                 } else {
                     return divideAndRound(this.inflated(), bigTenToThe(drop), newScale, roundingMode, newScale);
                 }
@@ -5780,6 +5836,30 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     private static final long DIV_NUM_BASE = (1L<<32); // Number base (32 bits).
 
     /**
+     * 128-bit overflow helper: when longMultiplyPowerTen overflows,
+     * try unsignedMultiplyHigh + divideAndRound128 before falling back to BigInteger.
+     * Extracted from divide(long,...) to keep that method lean for JIT inlining.
+     *
+     * @return BigDecimal result, or null if BigInteger fallback is needed
+     */
+    private static BigDecimal divide128Overflow(long dividend, long divisor, int raise,
+                                                 int scale, int roundingMode) {
+        long tenPow = LONG_TEN_POWERS_TABLE[raise];
+        int qsign = Long.signum(dividend) * Long.signum(divisor);
+        long absDiv = Math.abs(dividend);
+        long absDsr = Math.abs(divisor);
+        long lo = absDiv * tenPow;
+        long hi = Math.unsignedMultiplyHigh(absDiv, tenPow);
+        if (Long.compareUnsigned(hi, absDsr) >= 0) {
+            return null; // Quotient doesn't fit in 64 bits
+        }
+        if (absDsr > 0 && absDsr < (1L << 32)) {
+            return divideAndRound128_compact(hi, lo, absDsr, qsign, scale, roundingMode, scale);
+        }
+        return divideAndRound128(hi, lo, absDsr, qsign, scale, roundingMode, scale);
+    }
+
+    /**
      * Specialized 128/64 division for small divisors (< 2^32).
      * Used by the division fast path when divisor has 2-5 decimal digits (10-99999).
      *
@@ -6305,35 +6385,10 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                     }
                     return divideAndRound(scaledDividend, divisor, scale, roundingMode, scale);
                 }
-                // 128-bit direct path: when long multiply overflows, try 128-bit
-                // multiplication via Math.unsignedMultiplyHigh before falling back
-                // to BigInteger. On ARM this generates UMULH (3-5 cycles), avoiding
-                // BigInteger allocation + Knuth division on BigInteger.
-                long tenPow = LONG_TEN_POWERS_TABLE[raise];
-                int qsign128 = Long.signum(dividend) * Long.signum(divisor);
-                long absDiv128 = Math.abs(dividend);
-                long absDsr128 = Math.abs(divisor);
-                long lo128 = absDiv128 * tenPow;
-                long hi128 = Math.unsignedMultiplyHigh(absDiv128, tenPow);
-                if (Long.compareUnsigned(hi128, absDsr128) < 0) {
-                    // ARM optimization: for small divisors (< 2^32, always true for
-                    // 2-5 decimal digit divisors: 10-99999), use simplified 128/64
-                    // division avoiding Knuth normalization + correction loops.
-                    // 2 UDIV+MSUB vs 4 UDIV+mulsub+loops in divideAndRound128.
-                    if (absDsr128 > 0 && absDsr128 < (1L << 32)) {
-                        BigDecimal q = divideAndRound128_compact(
-                                hi128, lo128, absDsr128, qsign128,
-                                scale, roundingMode, scale);
-                        if (q != null) {
-                            return q;
-                        }
-                    } else {
-                        BigDecimal q = divideAndRound128(hi128, lo128, absDsr128, qsign128,
-                                                         scale, roundingMode, scale);
-                        if (q != null) {
-                            return q;
-                        }
-                    }
+                // 128-bit overflow path: extract to helper to keep this method lean for JIT inlining
+                BigDecimal q128 = divide128Overflow(dividend, divisor, raise, scale, roundingMode);
+                if (q128 != null) {
+                    return q128;
                 }
             } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
                 long scaledDivisor = longMultiplyPowerTen(divisor, -raise);
