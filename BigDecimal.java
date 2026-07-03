@@ -5766,11 +5766,93 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         long b = Math.abs(dividend1);
         final long dividendHi = Math.unsignedMultiplyHigh(a, b);
         final long dividendLo = a * b;
-        // divide
-        return divideAndRound128(dividendHi, dividendLo, Math.abs(divisor), qsign, scale, roundingMode, preferredScale);
+        long absDsr = Math.abs(divisor);
+        // ARM optimization: use compact 128-bit division for small divisors
+        if (absDsr > 0 && absDsr < (1L << 32)) {
+            BigDecimal q = divideAndRound128_compact(
+                    dividendHi, dividendLo, absDsr, qsign,
+                    scale, roundingMode, preferredScale);
+            if (q != null) return q;
+        }
+        return divideAndRound128(dividendHi, dividendLo, absDsr, qsign, scale, roundingMode, preferredScale);
     }
 
     private static final long DIV_NUM_BASE = (1L<<32); // Number base (32 bits).
+
+    /**
+     * Specialized 128/64 division for small divisors (< 2^32).
+     * Used by the division fast path when divisor has 2-5 decimal digits (10-99999).
+     *
+     * Simplified algorithm: since divisor fits in 32 bits and dividendHi < divisor,
+     * we split the 128-bit dividend into two 64-bit limbs and do two 64/32 divisions,
+     * avoiding Knuth's normalization and correction loops.
+     *
+     * ARM AArch64: 2 UDIV + 2 MSUB (8-16 cycles total)
+     * vs divideAndRound128: 4 UDIV + 2 mulsub + correction loops (30-60 cycles)
+     *
+     * @return BigDecimal result, or null if quotient doesn't fit in signed long
+     */
+    private static BigDecimal divideAndRound128_compact(
+            final long dividendHi, final long dividendLo,
+            final long divisor, final int sign,
+            final int scale, final int roundingMode,
+            final int preferredScale) {
+        // Precondition: divisor > 0 && divisor < 2^32
+        // Precondition: dividendHi, dividendLo are unsigned (abs'd by caller)
+
+        // Quotient overflow check: if dividendHi >= divisor, quotient > 64 bits
+        if (Long.compareUnsigned(dividendHi, divisor) >= 0) {
+            return null; // Fall back to BigInteger
+        }
+
+        // Step 1: Divide upper 96 bits → quotient high part
+        // Since dividendHi < divisor < 2^32, (dividendHi << 32) doesn't overflow
+        final long upper = (dividendHi << 32) | (dividendLo >>> 32);
+        final long qHi = Long.divideUnsigned(upper, divisor);
+        final long rem1 = Long.remainderUnsigned(upper, divisor);
+
+        // Step 2: Divide lower 64 bits → quotient low part
+        // rem1 < divisor < 2^32, so (rem1 << 32) doesn't overflow
+        final long lower = (rem1 << 32) | (dividendLo & 0xFFFFFFFFL);
+        final long qLo = Long.divideUnsigned(lower, divisor);
+        final long rem2 = Long.remainderUnsigned(lower, divisor);
+
+        // Check if quotient fits in signed long.
+        // qHi fits in 32 bits (guaranteed by dividendHi < divisor),
+        // but if bit 31 of qHi is set, (qHi << 32) sets bit 63 → overflow.
+        // Equivalent to original divideAndRound128's check: (int)q1 < 0
+        if ((int)qHi < 0) {
+            return null; // Fall back to BigInteger
+        }
+
+        final long q = (qHi << 32) | qLo;
+        final long signedQ = q * sign;
+
+        // Fast exit for ROUND_DOWN (common in financial truncation)
+        if (roundingMode == ROUND_DOWN) {
+            if (scale == preferredScale) {
+                return valueOf(signedQ, scale);
+            }
+            if (rem2 == 0) {
+                return createAndStripZerosToMatchScale(signedQ, scale, preferredScale);
+            }
+            return valueOf(signedQ, scale);
+        }
+
+        // Rounding
+        if (rem2 != 0) {
+            // For small divisors, 2*rem2 always fits in long (rem2 < 2^32)
+            boolean increment = (2 * rem2 >= divisor)
+                    ? commonNeedIncrement(roundingMode, sign, Long.compare(2 * rem2, divisor), (signedQ & 1L) != 0L)
+                    : commonNeedIncrement(roundingMode, sign, -1, (signedQ & 1L) != 0L);
+            return valueOf(increment ? signedQ + sign : signedQ, scale);
+        } else {
+            if (preferredScale != scale) {
+                return createAndStripZerosToMatchScale(signedQ, scale, preferredScale);
+            }
+            return valueOf(signedQ, scale);
+        }
+    }
 
     /*
      * divideAndRound 128-bit value by long divisor.
@@ -6234,10 +6316,23 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                 long lo128 = absDiv128 * tenPow;
                 long hi128 = Math.unsignedMultiplyHigh(absDiv128, tenPow);
                 if (Long.compareUnsigned(hi128, absDsr128) < 0) {
-                    BigDecimal q = divideAndRound128(hi128, lo128, absDsr128, qsign128,
-                                                     scale, roundingMode, scale);
-                    if (q != null) {
-                        return q;
+                    // ARM optimization: for small divisors (< 2^32, always true for
+                    // 2-5 decimal digit divisors: 10-99999), use simplified 128/64
+                    // division avoiding Knuth normalization + correction loops.
+                    // 2 UDIV+MSUB vs 4 UDIV+mulsub+loops in divideAndRound128.
+                    if (absDsr128 > 0 && absDsr128 < (1L << 32)) {
+                        BigDecimal q = divideAndRound128_compact(
+                                hi128, lo128, absDsr128, qsign128,
+                                scale, roundingMode, scale);
+                        if (q != null) {
+                            return q;
+                        }
+                    } else {
+                        BigDecimal q = divideAndRound128(hi128, lo128, absDsr128, qsign128,
+                                                         scale, roundingMode, scale);
+                        if (q != null) {
+                            return q;
+                        }
                     }
                 }
             } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
