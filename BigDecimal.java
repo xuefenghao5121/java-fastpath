@@ -1635,19 +1635,43 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
      * @return {@code this * multiplicand}
      */
     public BigDecimal multiply(BigDecimal multiplicand) {
+        if (this.intCompact != INFLATED && multiplicand.intCompact != INFLATED) {
+            long x = this.intCompact;
+            long y = multiplicand.intCompact;
+            // Inline everything: multiply + overflow check + object creation
+            long product = x * y;
+            // ARM optimization: skip Math.abs for positive operands (financial data)
+            // Stock JDK does: Math.abs(x) + Math.abs(y) + (ax|ay)>>>31
+            // We do: branch on sign, then (x|y)>>>31 for positive case
+            if (x >= 0 && y >= 0) {
+                // Both non-negative: overflow iff (x|y) >>> 31 != 0
+                // valueOf inlined: avoid scale==0 check for scale>0 (common case)
+                if ((x | y) >>> 31 == 0) {
+                    return product == 0 ? zeroValueOf(scale + multiplicand.scale)
+                        : new BigDecimal(null, product, scale + multiplicand.scale, 0);
+                }
+                // Larger positive operands: need full overflow check
+                if (product / y == x) {
+                    return valueOf(product, scale + multiplicand.scale);
+                }
+            } else {
+                // General case with signs
+                long ax = Math.abs(x);
+                long ay = Math.abs(y);
+                if (((ax | ay) >>> 31 == 0) || (y == 0) || (product / y == x)) {
+                    return valueOf(product, scale + multiplicand.scale);
+                }
+            }
+            return new BigDecimal(BigInteger.valueOf(x).multiply(y),
+                INFLATED, checkScale((long)scale + multiplicand.scale), 0);
+        }
         int productScale = checkScale((long) scale + multiplicand.scale);
         if (this.intCompact != INFLATED) {
-            if ((multiplicand.intCompact != INFLATED)) {
-                return multiply(this.intCompact, multiplicand.intCompact, productScale);
-            } else {
-                return multiply(this.intCompact, multiplicand.intVal, productScale);
-            }
+            return multiply(this.intCompact, multiplicand.intVal, productScale);
+        } else if (multiplicand.intCompact != INFLATED) {
+            return multiply(multiplicand.intCompact, this.intVal, productScale);
         } else {
-            if ((multiplicand.intCompact != INFLATED)) {
-                return multiply(multiplicand.intCompact, this.intVal, productScale);
-            } else {
-                return multiply(this.intVal, multiplicand.intVal, productScale);
-            }
+            return multiply(this.intVal, multiplicand.intVal, productScale);
         }
     }
 

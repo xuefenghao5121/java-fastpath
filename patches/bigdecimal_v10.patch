@@ -1,5 +1,5 @@
 --- /home/huawei/jdk25-test/jdk/src/java.base/share/classes/java/math/BigDecimal.java	2026-07-02 16:44:51.736053574 +0300
-+++ BigDecimal.java	2026-07-04 16:32:36.441488211 +0300
++++ BigDecimal.java	2026-07-04 16:39:03.495625932 +0300
 @@ -547,6 +547,17 @@
                  ("Bad offset or len arguments for char[] input.");
          }
@@ -57,7 +57,61 @@
                  return add(this.intCompact, this.scale, -subtrahend.intCompact, subtrahend.scale);
              } else {
                  return add(this.intCompact, this.scale, subtrahend.intVal.negate(), subtrahend.scale);
-@@ -1675,6 +1711,53 @@
+@@ -1599,19 +1635,43 @@
+      * @return {@code this * multiplicand}
+      */
+     public BigDecimal multiply(BigDecimal multiplicand) {
+-        int productScale = checkScale((long) scale + multiplicand.scale);
+-        if (this.intCompact != INFLATED) {
+-            if ((multiplicand.intCompact != INFLATED)) {
+-                return multiply(this.intCompact, multiplicand.intCompact, productScale);
++        if (this.intCompact != INFLATED && multiplicand.intCompact != INFLATED) {
++            long x = this.intCompact;
++            long y = multiplicand.intCompact;
++            // Inline everything: multiply + overflow check + object creation
++            long product = x * y;
++            // ARM optimization: skip Math.abs for positive operands (financial data)
++            // Stock JDK does: Math.abs(x) + Math.abs(y) + (ax|ay)>>>31
++            // We do: branch on sign, then (x|y)>>>31 for positive case
++            if (x >= 0 && y >= 0) {
++                // Both non-negative: overflow iff (x|y) >>> 31 != 0
++                // valueOf inlined: avoid scale==0 check for scale>0 (common case)
++                if ((x | y) >>> 31 == 0) {
++                    return product == 0 ? zeroValueOf(scale + multiplicand.scale)
++                        : new BigDecimal(null, product, scale + multiplicand.scale, 0);
++                }
++                // Larger positive operands: need full overflow check
++                if (product / y == x) {
++                    return valueOf(product, scale + multiplicand.scale);
++                }
+             } else {
+-                return multiply(this.intCompact, multiplicand.intVal, productScale);
++                // General case with signs
++                long ax = Math.abs(x);
++                long ay = Math.abs(y);
++                if (((ax | ay) >>> 31 == 0) || (y == 0) || (product / y == x)) {
++                    return valueOf(product, scale + multiplicand.scale);
++                }
+             }
++            return new BigDecimal(BigInteger.valueOf(x).multiply(y),
++                INFLATED, checkScale((long)scale + multiplicand.scale), 0);
++        }
++        int productScale = checkScale((long) scale + multiplicand.scale);
++        if (this.intCompact != INFLATED) {
++            return multiply(this.intCompact, multiplicand.intVal, productScale);
++        } else if (multiplicand.intCompact != INFLATED) {
++            return multiply(multiplicand.intCompact, this.intVal, productScale);
+         } else {
+-            if ((multiplicand.intCompact != INFLATED)) {
+-                return multiply(multiplicand.intCompact, this.intVal, productScale);
+-            } else {
+-                return multiply(this.intVal, multiplicand.intVal, productScale);
+-            }
++            return multiply(this.intVal, multiplicand.intVal, productScale);
+         }
+     }
+ 
+@@ -1675,6 +1735,53 @@
      public BigDecimal divide(BigDecimal divisor, int scale, int roundingMode) {
          if (roundingMode < ROUND_UP || roundingMode > ROUND_UNNECESSARY)
              throw new IllegalArgumentException("Invalid rounding mode");
@@ -111,7 +165,7 @@
          if (this.intCompact != INFLATED) {
              if ((divisor.intCompact != INFLATED)) {
                  return divide(this.intCompact, this.scale, divisor.intCompact, divisor.scale, scale, roundingMode);
-@@ -1863,15 +1946,47 @@
+@@ -1863,15 +1970,47 @@
          }
          if (dividend.signum() == 0) // 0/y
              return zeroValueOf(saturateLong(preferredScale));
@@ -163,7 +217,7 @@
              if(divisor.intCompact!=INFLATED) {
                  return divide(dividend.intVal, xscale, divisor.intCompact, yscale, preferredScale, mc);
              } else {
-@@ -2894,10 +3009,19 @@
+@@ -2894,10 +3033,19 @@
                  return new BigDecimal(rb, INFLATED, newScale, (precision > 0) ? precision + raise : 0);
              } else {
                  // newScale < oldScale -- drop some digits
@@ -185,7 +239,7 @@
                  } else {
                      return divideAndRound(this.inflated(), bigTenToThe(drop), newScale, roundingMode, newScale);
                  }
-@@ -5246,12 +5370,22 @@
+@@ -5246,12 +5394,22 @@
      private static BigDecimal add(final long xs, int scale1, final long ys, int scale2) {
          long sdiff = (long) scale1 - scale2;
          if (sdiff == 0) {
@@ -210,7 +264,7 @@
              } else {
                  BigInteger bigsum = bigMultiplyPowerTen(xs,raise).add(ys);
                  return ((xs^ys)>=0) ? // same sign test
-@@ -5262,7 +5396,12 @@
+@@ -5262,7 +5420,12 @@
              int raise = checkScale(ys,sdiff);
              long scaledY = longMultiplyPowerTen(ys, raise);
              if (scaledY != INFLATED) {
@@ -224,7 +278,7 @@
              } else {
                  BigInteger bigsum = bigMultiplyPowerTen(ys,raise).add(xs);
                  return ((xs^ys)>=0) ?
-@@ -5422,16 +5561,119 @@
+@@ -5422,16 +5585,119 @@
       */
      private static BigDecimal divide(final long xs, int xscale, final long ys, int yscale, long preferredScale, MathContext mc) {
          int mcp = mc.precision;
@@ -347,7 +401,7 @@
          int scl = checkScaleNonZero(preferredScale + yscale - xscale + mcp);
          BigDecimal quotient;
          if (checkScaleNonZero((long) mcp + yscale - xscale) > 0) {
-@@ -5445,7 +5687,6 @@
+@@ -5445,7 +5711,6 @@
              }
          } else {
              int newScale = checkScaleNonZero((long) xscale - mcp);
@@ -355,7 +409,7 @@
              if (newScale == yscale) { // easy case
                  quotient = divideAndRound(xs, ys, scl, roundingMode,checkScaleNonZero(preferredScale));
              } else {
-@@ -5460,7 +5701,6 @@
+@@ -5460,7 +5725,6 @@
                  }
              }
          }
@@ -363,7 +417,7 @@
          return doRound(quotient,mc);
      }
  
-@@ -5574,36 +5814,126 @@
+@@ -5574,36 +5838,126 @@
      private static BigDecimal multiplyDivideAndRound(long dividend0, long dividend1, long divisor, int scale, int roundingMode,
                                                       int preferredScale) {
          int qsign = Long.signum(dividend0)*Long.signum(dividend1)*Long.signum(divisor);
@@ -516,7 +570,7 @@
      /*
       * divideAndRound 128-bit value by long divisor.
       * returns null if quotient can't fit into long value;
-@@ -5737,6 +6067,80 @@
+@@ -5737,6 +6091,80 @@
          return (one+Long.MIN_VALUE) >= (two+Long.MIN_VALUE);
      }
  
@@ -597,7 +651,7 @@
  
      // Compare Normalize dividend & divisor so that both fall into [0.1, 0.999...]
      private static int compareMagnitudeNormalized(long xs, int xscale, long ys, int yscale) {
-@@ -5812,6 +6216,7 @@
+@@ -5812,6 +6240,7 @@
       * Multiplies two long values and rounds according {@code MathContext}
       */
      private static BigDecimal multiplyAndRound(long x, long y, int scale, MathContext mc) {
@@ -605,7 +659,7 @@
          long product = multiply(x, y);
          if(product!=INFLATED) {
              return doRound(product, scale, mc);
-@@ -5936,6 +6341,37 @@
+@@ -5936,6 +6365,37 @@
      }
  
      private static BigDecimal divide(long dividend, int dividendScale, long divisor, int divisorScale, int scale, int roundingMode) {
