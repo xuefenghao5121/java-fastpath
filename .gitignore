@@ -1,1 +1,16 @@
+# Build artifacts
+*_classes/
+*_module/
+*.jar
+*_patch_module/
+
+# Test/benchmark temp files
+results_*.txt
+focused_*.txt
+test_cases.txt
+
+# Keep src/ and test/ local only
+src/
 benchmark/
+test/
+proto_classes/

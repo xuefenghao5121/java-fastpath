@@ -1,0 +1,135 @@
+--- /home/huawei/jdk25-test/jdk/src/java.base/share/classes/java/math/MutableBigInteger.java	2026-07-02 14:48:33.902522027 +0300
++++ MutableBigInteger.java	2026-07-04 12:03:46.010793454 +0300
+@@ -1616,6 +1616,14 @@
+         long dhLong = dh & LONG_MASK;
+         int dl = divisor[1];
+ 
++        // ===== Reciprocal for qhat estimation (replaces UDIV+UREM in inner loop) =====
++        // v = ceil(2^64 / dh) = floor((2^64-1)/dh) + 1
++        // On ARM: UMULH (3-5cyc) replaces UDIV (12-20cyc) per quotient digit
++        final long vRecip = Long.divideUnsigned(-1L, dhLong) + 1;
++
++        // ===== Dispatch: dlen==2 uses mulsubLong/divaddLong at call sites =====
++        // (inlined in the loop below, no separate method to avoid JIT inlining failure)
++
+         // D2 Initialize j
+         for (int j=0; j < limit-1; j++) {
+             // D3 Calculate qhat
+@@ -1633,8 +1641,15 @@
+                 skipCorrection = qrem + 0x80000000 < nh2;
+             } else {
+                 long nChunk = (((long)nh) << 32) | (nm & LONG_MASK);
+-                qhat = (int) Long.divideUnsigned(nChunk, dhLong);
+-                qrem = (int) Long.remainderUnsigned(nChunk, dhLong);
++                // Reciprocal multiply for qhat estimation
++                qhat = (int) Math.unsignedMultiplyHigh(nChunk, vRecip);
++                long prod = (qhat & LONG_MASK) * dhLong;
++                long qremLong = nChunk - prod;
++                if (unsignedLongCompare(prod, nChunk)) {
++                    qhat--;
++                    qremLong = nChunk - (qhat & LONG_MASK) * dhLong;
++                }
++                qrem = (int) qremLong;
+             }
+ 
+             if (qhat == 0)
+@@ -1657,14 +1672,19 @@
+                 }
+             }
+ 
+-            // D4 Multiply and subtract
++            // D4 Multiply and subtract (use mulsubLong for dlen==2)
+             rem.value[j+rem.offset] = 0;
+-            int borrow = mulsub(rem.value, divisor, qhat, dlen, j+rem.offset);
++            int borrow = (dlen == 2)
++                ? mulsubLong(rem.value, dh, dl, qhat, j+rem.offset)
++                : mulsub(rem.value, divisor, qhat, dlen, j+rem.offset);
+ 
+             // D5 Test remainder
+             if (borrow + 0x80000000 > nh2) {
+-                // D6 Add back
+-                divadd(divisor, rem.value, j+1+rem.offset);
++                // D6 Add back (use divaddLong for dlen==2)
++                if (dlen == 2)
++                    divaddLong(dh, dl, rem.value, j+1+rem.offset);
++                else
++                    divadd(divisor, rem.value, j+1+rem.offset);
+                 qhat--;
+             }
+ 
+@@ -1686,8 +1706,14 @@
+             skipCorrection = qrem + 0x80000000 < nh2;
+         } else {
+             long nChunk = (((long) nh) << 32) | (nm & LONG_MASK);
+-            qhat = (int) Long.divideUnsigned(nChunk, dhLong);
+-            qrem = (int) Long.remainderUnsigned(nChunk, dhLong);
++            qhat = (int) Math.unsignedMultiplyHigh(nChunk, vRecip);
++            long prod = (qhat & LONG_MASK) * dhLong;
++            long qremLong = nChunk - prod;
++            if (unsignedLongCompare(prod, nChunk)) {
++                qhat--;
++                qremLong = nChunk - (qhat & LONG_MASK) * dhLong;
++            }
++            qrem = (int) qremLong;
+         }
+         if (qhat != 0) {
+             if (!skipCorrection) { // Correct qhat
+@@ -1707,19 +1733,22 @@
+                 }
+             }
+ 
+-
+-            // D4 Multiply and subtract
++            // D4 Multiply and subtract (use mulsubLong for dlen==2)
+             int borrow;
+             rem.value[limit - 1 + rem.offset] = 0;
+-            if(needRemainder)
++            if (dlen == 2) {
++                borrow = mulsubLong(rem.value, dh, dl, qhat, limit - 1 + rem.offset);
++            } else if(needRemainder)
+                 borrow = mulsub(rem.value, divisor, qhat, dlen, limit - 1 + rem.offset);
+             else
+                 borrow = mulsubBorrow(rem.value, divisor, qhat, dlen, limit - 1 + rem.offset);
+ 
+             // D5 Test remainder
+             if (borrow + 0x80000000 > nh2) {
+-                // D6 Add back
+-                if(needRemainder)
++                // D6 Add back (use divaddLong for dlen==2)
++                if (dlen == 2)
++                    divaddLong(dh, dl, rem.value, limit + rem.offset);
++                else if(needRemainder)
+                     divadd(divisor, rem.value, limit - 1 + 1 + rem.offset);
+                 qhat--;
+             }
+@@ -1779,6 +1808,11 @@
+         long dhLong = dh & LONG_MASK;
+         int dl = (int)(ldivisor & LONG_MASK);
+ 
++        // Precompute reciprocal: v = ceil(2^64 / dh) = floor((2^64-1)/dh) + 1
++        // Used to replace UDIV+UREM with UMULH+MUL for qhat estimation.
++        // On ARM (Neoverse V2): UMULH=3-5cyc vs UDIV=12-20cyc per digit.
++        final long vRecip = Long.divideUnsigned(-1L, dhLong) + 1;
++
+         // D2 Initialize j
+         for (int j = 0; j < limit; j++) {
+             // D3 Calculate qhat
+@@ -1796,8 +1830,16 @@
+                 skipCorrection = qrem + 0x80000000 < nh2;
+             } else {
+                 long nChunk = (((long) nh) << 32) | (nm & LONG_MASK);
+-                qhat = (int) Long.divideUnsigned(nChunk, dhLong);
+-                qrem = (int) Long.remainderUnsigned(nChunk, dhLong);
++                // Reciprocal multiply: qhat = UMULH(nChunk, v) ∈ {q_true, q_true+1}
++                qhat = (int) Math.unsignedMultiplyHigh(nChunk, vRecip);
++                // Compute qrem = nChunk - qhat * dh (handles overestimate)
++                long prod = (qhat & LONG_MASK) * dhLong;
++                long qremLong = nChunk - prod;
++                if (unsignedLongCompare(prod, nChunk)) {
++                    qhat--;
++                    qremLong = nChunk - (qhat & LONG_MASK) * dhLong;
++                }
++                qrem = (int) qremLong;
+             }
+ 
+             if (qhat == 0)

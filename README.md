@@ -1,61 +1,68 @@
 # java-fastpath
 
-JDK 25 BigDecimal 快速路径优化，税务系统长尾计算场景。
-
-## 优化内容
-
-### v3 (2026-07-03) — 除法优化
-
-1. **精确除法快速路径** (`divide(BigDecimal, MathContext)` 公有方法)
-   - 在 precision 归一化之前检查 `xs % ys == 0`
-   - 使用实际 scale（非 precision）计算，避免 BigInteger 分配
-   - 预过滤：`|xs| < |ys|` 时跳过（仅 1 次比较，~0.5ns 开销）
-   - 效果：100÷0.001 从 178ns → 8ns (**-95%**)
-
-2. **128-bit 分裂乘法路径** (`divide(long, int, long, int, ...)` 内部方法)
-   - mcp≥18 时，将 `10^effMcp` 分解为 `10^18 × 10^remainder`
-   - 用 `multiplyDivideAndRound`（128-bit）替代 BigInteger 除法
-   - 精度预检查：`part2/ys ≥ 10^(mcp-19)` 确保商有足够有效数字
-   - 范围预检查：`part2/ys < 18` 确保商适合 unsigned long
-   - 效果：100÷99.999 从 45ns → 32ns (**-29%**)
-
-3. **条件 actual-scale 入口** (`divide(BigDecimal, MathContext)` 公有方法)
-   - 当 `dividend.precision() > divisor.precision()` 时，用实际 scale 替代 precision
-   - 使 fastpath 条件 `xscale <= yscale` 能在更多场景触发
-   - 仅在 precision 条件失败时启用，不影响已有路径正确性
-
-4. **subtract 编译修复**
-   - 修复 `BigInteger.valueOf(xs).subtract(ys)` 类型错误（ys 为 long）
-
-### v2 (2026-07-02) — 乘法 + 解析优化
-
-1. 乘法快速路径 (`isSmallMultiply`)：大额×税率场景 +11.6%
-2. 除法快速路径：移除冗余 guard check
-3. 金融格式解析：货币(2位)/百分比(4位) +7.6%
-
-## 文件
-
-- `bigdecimal2.java` — 修改后的完整 BigDecimal 源码
-- `patches/bigdecimal_fastpath_v3.patch` — v3 差异补丁
-- `patches/bigdecimal_fastpath_v2.patch` — v2 差异补丁
-
-## 测试
-
-base=100, 除数: 0.001 ~ 1.23456789E+10, mcp=10/17/20
-
-| 场景 | mcp=20 | mcp=17 | mcp=10 |
-|------|--------|--------|--------|
-| 精确除法 (÷0.001, ÷0.01) | -95% | -75% | -69% |
-| 近似整除 (÷99.999) | -29% | +8%* | ≈ |
-| 非精确除法 | +9~13%* | +8%* | ≈ |
-
-*非精确除法的回退来自精确除法预检查的 ~3ns 固有开销
+BigDecimal 快速路径优化，面向 ARM AArch64 (Kunpeng 930 / Neoverse V2)。
 
 ## 使用
 
+### 方式 1: --patch-module（推荐）
+
 ```bash
-# 用 patch 版本运行
-java --patch-module java.base=/path/to/patch_module \
+# 编译
+javac --patch-module java.base=patched/java.base \
+  --add-exports java.base/jdk.internal.access=ALL-UNNAMED \
+  --add-exports java.base/jdk.internal.math=ALL-UNNAMED \
+  --add-exports java.base/jdk.internal.util=ALL-UNNAMED \
+  -d patched_classes patched/java.base/java/math/BigDecimal.java
+
+# 运行
+java --patch-module java.base=/path/to/patched_module \
   --add-opens java.base/java.math=ALL-UNNAMED \
   -cp your_app.jar com.example.Main
 ```
+
+### 方式 2: 应用 patch
+
+```bash
+# 仅 BigDecimal 快速路径
+cd $OPENJDK25_SRC
+patch -p1 < bigdecimal_v10.patch
+
+# 包含 Knuth D 优化（MutableBigInteger）
+patch -p1 < full_optimization.patch
+```
+
+## 文件
+
+| 文件 | 说明 |
+|------|------|
+| `BigDecimal.java` | 修改后的完整源码，覆盖 JDK 25 原文件即可 |
+| `patches/bigdecimal_v10.patch` | BigDecimal 快速路径 diff vs OpenJDK 25 |
+| `patches/mutablebigint_knuth.patch` | MutableBigInteger Knuth D 优化 diff |
+| `patches/full_optimization.patch` | 上述两个 patch 合并 |
+
+## 优化内容
+
+### BigDecimal 快速路径 (v1-v10)
+
+- **乘法**: `isSmallMultiply` 快速路径，大额×税率场景
+- **除法**: 扩大 `divideSmallFastPath` 覆盖范围，支持更大 scale/precision
+- **128-bit 直通路径**: `Math.unsignedMultiplyHigh` (JDK 18+ intrinsic, ARM→UMULH)
+- **精确除法检查**: 前置过滤，避免不必要的 BigInteger 运算
+- **内联优化**: divide/setScale fast path 直接内联，减少方法调用开销
+
+### Knuth Algorithm D (MutableBigInteger)
+
+- **倒数乘法**: 用 `Math.unsignedMultiplyHigh` 替代 UDIV 做 qhat 估算
+- **dlen==2 快速路径**: `mulsubLong`/`divaddLong` 展开替代通用循环
+- 适用场景: scale=50 大数除法、BigInteger 级运算
+
+## 验证
+
+- 差分测试: 6993 cases vs stock JDK 25 全部一致
+- 功能测试: 9208 cases 通过
+- 平台: x86 验证，ARM 待测
+
+## 目标平台
+
+- ARM AArch64 (Kunpeng 930 / Neoverse V2), JDK 25+
+- x86 仅用于开发验证
