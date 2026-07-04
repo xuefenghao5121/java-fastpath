@@ -1,134 +1,42 @@
 --- /home/huawei/jdk25-test/jdk/src/java.base/share/classes/java/math/BigDecimal.java	2026-07-02 16:44:51.736053574 +0300
-+++ BigDecimal.java	2026-07-04 17:56:45.400387169 +0300
-@@ -547,6 +547,17 @@
-                 ("Bad offset or len arguments for char[] input.");
-         }
- 
-+        // Fast path: financial format string
-+        int fastScale = checkFinancialFastPath(in, offset, len);
-+        if (fastScale != -1) {
-+            BigDecimal result = parseFinancialFastPath(in, offset, len, fastScale, mc);
-+            this.intCompact = result.intCompact;
-+            this.scale = result.scale;
-+            this.intVal = result.intVal;
-+            this.precision = result.precision;
-+            return;
-+        }
-+
-         // This is the primary string to BigDecimal constructor; all
-         // incoming strings end up here; it uses explicit (inline)
-         // parsing for speed and generates at most one intermediate
-@@ -1410,6 +1421,18 @@
-     public BigDecimal add(BigDecimal augend) {
-         if (this.intCompact != INFLATED) {
-             if ((augend.intCompact != INFLATED)) {
-+                // Fast path: both compact, same scale — inline overflow-checked addition
-+                // Eliminates 3 method dispatches: add(long,int,long,int) → add(long,long,int) → add(long,long)
-+                if (this.scale == augend.scale) {
-+                    long xs = this.intCompact;
-+                    long ys = augend.intCompact;
-+                    long sum = xs + ys;
-+                    // Hacker's Delight 2-12: overflow iff both operand signs match but result differs
-+                    if (((xs ^ sum) & (ys ^ sum)) >= 0) {
-+                        return BigDecimal.valueOf(sum, scale);
-+                    }
-+                    return new BigDecimal(BigInteger.valueOf(xs).add(ys), scale);
-+                }
-                 return add(this.intCompact, this.scale, augend.intCompact, augend.scale);
-             } else {
-                 return add(this.intCompact, this.scale, augend.intVal, augend.scale);
-@@ -1555,6 +1578,19 @@
-     public BigDecimal subtract(BigDecimal subtrahend) {
-         if (this.intCompact != INFLATED) {
-             if ((subtrahend.intCompact != INFLATED)) {
-+                // Fast path: both compact, same scale — inline overflow-checked subtraction
-+                // Avoids negation + recursive add dispatch chain
-+                if (this.scale == subtrahend.scale) {
-+                    long xs = this.intCompact;
-+                    long ys = subtrahend.intCompact;
-+                    long diff = xs - ys;
-+                    // Hacker's Delight 2-12 (subtraction variant):
-+                    // overflow iff operand signs differ but result sign matches minuend
-+                    if (((xs ^ ys) & (xs ^ diff)) >= 0) {
-+                        return BigDecimal.valueOf(diff, scale);
-+                    }
-+                    return new BigDecimal(BigInteger.valueOf(xs).subtract(BigInteger.valueOf(ys)), scale);
-+                }
-                 return add(this.intCompact, this.scale, -subtrahend.intCompact, subtrahend.scale);
-             } else {
-                 return add(this.intCompact, this.scale, subtrahend.intVal.negate(), subtrahend.scale);
-@@ -1599,19 +1635,43 @@
++++ BigDecimal.java	2026-07-04 18:21:47.604228538 +0300
+@@ -1599,6 +1599,22 @@
       * @return {@code this * multiplicand}
       */
      public BigDecimal multiply(BigDecimal multiplicand) {
--        int productScale = checkScale((long) scale + multiplicand.scale);
--        if (this.intCompact != INFLATED) {
--            if ((multiplicand.intCompact != INFLATED)) {
--                return multiply(this.intCompact, multiplicand.intCompact, productScale);
 +        if (this.intCompact != INFLATED && multiplicand.intCompact != INFLATED) {
-+            long x = this.intCompact;
-+            long y = multiplicand.intCompact;
-+            // Inline everything: multiply + overflow check + object creation
++            long x = this.intCompact, y = multiplicand.intCompact;
 +            long product = x * y;
-+            // ARM optimization: skip Math.abs for positive operands (financial data)
-+            // Stock JDK does: Math.abs(x) + Math.abs(y) + (ax|ay)>>>31
-+            // We do: branch on sign, then (x|y)>>>31 for positive case
-+            if (x >= 0 && y >= 0) {
-+                // Both non-negative: overflow iff (x|y) >>> 31 != 0
-+                // valueOf inlined: avoid scale==0 check for scale>0 (common case)
-+                if ((x | y) >>> 31 == 0) {
-+                    return product == 0 ? zeroValueOf(scale + multiplicand.scale)
-+                        : new BigDecimal(null, product, scale + multiplicand.scale, 0);
-+                }
-+                // Larger positive operands: need full overflow check
-+                if (product / y == x) {
-+                    return valueOf(product, scale + multiplicand.scale);
-+                }
-             } else {
--                return multiply(this.intCompact, multiplicand.intVal, productScale);
-+                // General case with signs
-+                long ax = Math.abs(x);
-+                long ay = Math.abs(y);
-+                if (((ax | ay) >>> 31 == 0) || (y == 0) || (product / y == x)) {
-+                    return valueOf(product, scale + multiplicand.scale);
-+                }
-             }
++            // Positive fast path: skip Math.abs for non-negative operands
++            if (x >= 0 && y >= 0 && (x | y) >>> 31 == 0) {
++                int ps = scale + multiplicand.scale;
++                return product == 0 ? zeroValueOf(ps) : new BigDecimal(null, product, ps, 0);
++            }
++            // General compact path
++            long ax = Math.abs(x), ay = Math.abs(y);
++            if (((ax | ay) >>> 31 == 0) || (y == 0) || (product / y == x)) {
++                return valueOf(product, scale + multiplicand.scale);
++            }
 +            return new BigDecimal(BigInteger.valueOf(x).multiply(y),
 +                INFLATED, checkScale((long)scale + multiplicand.scale), 0);
 +        }
-+        int productScale = checkScale((long) scale + multiplicand.scale);
-+        if (this.intCompact != INFLATED) {
-+            return multiply(this.intCompact, multiplicand.intVal, productScale);
-+        } else if (multiplicand.intCompact != INFLATED) {
-+            return multiply(multiplicand.intCompact, this.intVal, productScale);
-         } else {
--            if ((multiplicand.intCompact != INFLATED)) {
--                return multiply(multiplicand.intCompact, this.intVal, productScale);
--            } else {
--                return multiply(this.intVal, multiplicand.intVal, productScale);
--            }
-+            return multiply(this.intVal, multiplicand.intVal, productScale);
-         }
-     }
- 
-@@ -1675,6 +1735,16 @@
+         int productScale = checkScale((long) scale + multiplicand.scale);
+         if (this.intCompact != INFLATED) {
+             if ((multiplicand.intCompact != INFLATED)) {
+@@ -1675,6 +1691,12 @@
      public BigDecimal divide(BigDecimal divisor, int scale, int roundingMode) {
          if (roundingMode < ROUND_UP || roundingMode > ROUND_UNNECESSARY)
              throw new IllegalArgumentException("Invalid rounding mode");
-+
-+        // Compact fast path: both operands fit in long
 +        if (this.intCompact != INFLATED && divisor.intCompact != INFLATED && divisor.intCompact != 0) {
 +            BigDecimal q = divideCompact(this.intCompact, this.scale,
 +                                         divisor.intCompact, divisor.scale,
 +                                         scale, roundingMode);
 +            if (q != null) return q;
 +        }
-+
-+        // Original path for BigInteger or overflow cases
          if (this.intCompact != INFLATED) {
              if ((divisor.intCompact != INFLATED)) {
                  return divide(this.intCompact, this.scale, divisor.intCompact, divisor.scale, scale, roundingMode);
-@@ -1690,6 +1760,85 @@
+@@ -1690,6 +1712,33 @@
          }
      }
  
@@ -136,189 +44,66 @@
 +                                            int scale, int roundingMode) {
 +        int raise = scale + yscale - xscale;
 +        if (raise >= 0 && raise < LONG_TEN_POWERS_TABLE.length) {
-+            // Power-of-10 shortcut: if xs == 10^k, then xs * 10^raise = 10^(raise+k)
-+            // Saves 1 IMUL (3cyc on ARM Neoverse V2)
-+            int xsPow = powerOfTen(xs);
-+            if (xsPow >= 0 && raise + xsPow < LONG_TEN_POWERS_TABLE.length) {
-+                long scaledDividend = LONG_TEN_POWERS_TABLE[raise + xsPow];
-+                long q = scaledDividend / ys;
-+                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
-+                long r = scaledDividend % ys;
-+                if (r == 0) return valueOf(q, scale);
-+                int qsign = ((scaledDividend < 0) == (ys < 0)) ? 1 : -1;
-+                boolean increment = needIncrement(ys, roundingMode, qsign, q, r);
-+                return valueOf(increment ? q + qsign : q, scale);
-+            }
 +            if (Math.abs(xs) <= THRESHOLDS_TABLE[raise]) {
-+                long scaledDividend = xs * LONG_TEN_POWERS_TABLE[raise];
-+                long q = scaledDividend / ys;
++                long sd = xs * LONG_TEN_POWERS_TABLE[raise];
++                long q = sd / ys;
 +                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
-+                long r = scaledDividend % ys;
++                long r = sd % ys;
 +                if (r == 0) return valueOf(q, scale);
-+                int qsign = ((scaledDividend < 0) == (ys < 0)) ? 1 : -1;
-+                boolean increment = needIncrement(ys, roundingMode, qsign, q, r);
-+                return valueOf(increment ? q + qsign : q, scale);
++                int qs = ((sd < 0) == (ys < 0)) ? 1 : -1;
++                return valueOf(needIncrement(ys, roundingMode, qs, q, r) ? q + qs : q, scale);
 +            }
 +        } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
-+            int ysPow = powerOfTen(ys);
-+            if (ysPow >= 0 && -raise + ysPow < LONG_TEN_POWERS_TABLE.length) {
-+                long scaledDivisor = LONG_TEN_POWERS_TABLE[-raise + ysPow];
-+                long q = xs / scaledDivisor;
-+                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
-+                long r = xs % scaledDivisor;
-+                if (r == 0) return valueOf(q, scale);
-+                int qsign = ((xs < 0) == (scaledDivisor < 0)) ? 1 : -1;
-+                boolean increment = needIncrement(scaledDivisor, roundingMode, qsign, q, r);
-+                return valueOf(increment ? q + qsign : q, scale);
-+            }
 +            if (Math.abs(ys) <= THRESHOLDS_TABLE[-raise]) {
-+                long scaledDivisor = ys * LONG_TEN_POWERS_TABLE[-raise];
-+                long q = xs / scaledDivisor;
++                long sd = ys * LONG_TEN_POWERS_TABLE[-raise];
++                long q = xs / sd;
 +                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
-+                long r = xs % scaledDivisor;
++                long r = xs % sd;
 +                if (r == 0) return valueOf(q, scale);
-+                int qsign = ((xs < 0) == (scaledDivisor < 0)) ? 1 : -1;
-+                boolean increment = needIncrement(scaledDivisor, roundingMode, qsign, q, r);
-+                return valueOf(increment ? q + qsign : q, scale);
++                int qs = ((xs < 0) == (sd < 0)) ? 1 : -1;
++                return valueOf(needIncrement(sd, roundingMode, qs, q, r) ? q + qs : q, scale);
 +            }
 +        }
-+        return null; // fast path not applicable
-+    }
-+
-+    /**
-+     * Returns k if x == 10^k (0 <= k <= 18), otherwise -1.
-+     * Enables power-of-10 shortcut: skip multiply, direct table lookup.
-+     */
-+    private static int powerOfTen(long x) {
-+        if (x <= 0) return -1;
-+        if (x <= 1000000000L) {
-+            return switch ((int) x) {
-+                case 1 -> 0; case 10 -> 1; case 100 -> 2; case 1000 -> 3;
-+                case 10000 -> 4; case 100000 -> 5; case 1000000 -> 6;
-+                case 10000000 -> 7; case 100000000 -> 8; case 1000000000 -> 9;
-+                default -> -1;
-+            };
-+        }
-+        if (x == 10000000000L) return 10;
-+        if (x == 100000000000L) return 11;
-+        if (x == 1000000000000L) return 12;
-+        if (x == 10000000000000L) return 13;
-+        if (x == 100000000000000L) return 14;
-+        if (x == 1000000000000000L) return 15;
-+        if (x == 10000000000000000L) return 16;
-+        if (x == 100000000000000000L) return 17;
-+        if (x == 1000000000000000000L) return 18;
-+        return -1;
++        return null;
 +    }
 +
      /**
       * Returns a {@code BigDecimal} whose value is {@code (this /
       * divisor)}, and whose scale is as specified.  If rounding must
-@@ -1863,15 +2012,47 @@
-         }
-         if (dividend.signum() == 0) // 0/y
-             return zeroValueOf(saturateLong(preferredScale));
--        int xscale = dividend.precision();
--        int yscale = divisor.precision();
-+        
-+        // ========== NEW: Exact division fast path ==========
-+        // Check BEFORE precision-based normalization, using actual scales.
-+        // For 100/0.001=100000, 100/0.01=10000 — skips ALL BigInteger allocation.
-+        // Quick pre-filter: |xs| < |ys| means result < 1, can't be exact integer.
-+        // This makes overhead ~0.5ns for non-exact cases (just a comparison).
-+        if (dividend.intCompact != INFLATED && divisor.intCompact != INFLATED) {
-+            long xs = dividend.intCompact;
-+            long ys = divisor.intCompact;
-+            if (Math.abs(xs) >= Math.abs(ys) && xs % ys == 0) {
-+                long q = xs / ys;
-+                long scl = preferredScale;
-+                if (scl >= Integer.MIN_VALUE && scl <= Integer.MAX_VALUE) {
-+                    return doRound(valueOf(q, (int)scl), mc);
-+                }
-+            }
-+        }
-+        
-+        // ========== NEW: Use actual scales only when precision-based condition fails ==========
-+        // The internal divide method's scale computation depends on the "scale" parameters.
-+        // Using actual scales instead of precision is ONLY safe when the precision-based
-+        // fast path condition (xscale_prec <= yscale_prec) would FAIL anyway, meaning
-+        // the slow path would be used. In that case, actual scales give the same final
-+        // result (after doRound) but may enable the extended fast path.
-         if(dividend.intCompact!=INFLATED) {
-+            int xprec = dividend.precision();
-+            int yprec = divisor.precision();
-             if(divisor.intCompact!=INFLATED) {
--                return divide(dividend.intCompact, xscale, divisor.intCompact, yscale, preferredScale, mc);
-+                if (xprec <= yprec) {
-+                    // Precision-based fast path works → use precision (original behavior)
-+                    return divide(dividend.intCompact, xprec, divisor.intCompact, yprec, preferredScale, mc);
-+                } else {
-+                    // Precision condition fails → use actual scales to enable extended fast path
-+                    return divide(dividend.intCompact, dividend.scale, divisor.intCompact, divisor.scale, preferredScale, mc);
-+                }
-             } else {
--                return divide(dividend.intCompact, xscale, divisor.intVal, yscale, preferredScale, mc);
-+                return divide(dividend.intCompact, xprec, divisor.intVal, yprec, preferredScale, mc);
-             }
-         } else {
-+            int xscale = dividend.precision();
-+            int yscale = divisor.precision();
-             if(divisor.intCompact!=INFLATED) {
-                 return divide(dividend.intVal, xscale, divisor.intCompact, yscale, preferredScale, mc);
-             } else {
-@@ -4384,6 +4565,12 @@
+@@ -4376,6 +4425,20 @@
+         return INFLATED;
+     }
+ 
++    private static final long[] POW10_TABLE = {
++        1L, 10L, 100L, 1000L, 10000L, 100000L, 1000000L, 10000000L,
++        100000000L, 1000000000L, 10000000000L, 100000000000L,
++        1000000000000L, 10000000000000L, 100000000000000L,
++        1000000000000000L, 10000000000000000L, 100000000000000000L,
++        1000000000000000000L
++    };
++
++    private static int powerOfTen(long x) {
++        for (int i = 0; i < POW10_TABLE.length; i++)
++            if (x == POW10_TABLE[i]) return i;
++        return -1;
++    }
++
+     /**
+      * Compute this * 10 ^ n.
+      * Needed mainly to allow special casing to trap zero value
+@@ -4383,7 +4446,10 @@
+     private BigInteger bigMultiplyPowerTen(int n) {
          if (n <= 0)
              return this.inflated();
- 
+-
 +        // Power-of-10 shortcut: 10^k * 10^n = 10^(n+k)
-+        // Skips BigInteger.multiply() entirely
 +        int k = (intCompact != INFLATED) ? powerOfTen(intCompact) : -1;
 +        if (k >= 0)
 +            return bigTenToThe(n + k);
-+
          if (intCompact != INFLATED)
              return bigTenToThe(n).multiply(intCompact);
          else
-@@ -5246,12 +5433,22 @@
-     private static BigDecimal add(final long xs, int scale1, final long ys, int scale2) {
-         long sdiff = (long) scale1 - scale2;
-         if (sdiff == 0) {
--            return add(xs, ys, scale1);
-+            // Inlined add(xs, ys, scale1): overflow-checked addition without method dispatch
-+            long sum = xs + ys;
-+            if (((xs ^ sum) & (ys ^ sum)) >= 0) {
-+                return BigDecimal.valueOf(sum, scale1);
-+            }
-+            return new BigDecimal(BigInteger.valueOf(xs).add(ys), scale1);
-         } else if (sdiff < 0) {
-             int raise = checkScale(xs,-sdiff);
-             long scaledX = longMultiplyPowerTen(xs, raise);
-             if (scaledX != INFLATED) {
--                return add(scaledX, ys, scale2);
-+                // Inlined add(scaledX, ys, scale2): eliminates recursive call
-+                long sum = scaledX + ys;
-+                if (((scaledX ^ sum) & (ys ^ sum)) >= 0) {
-+                    return BigDecimal.valueOf(sum, scale2);
-+                }
-+                return new BigDecimal(BigInteger.valueOf(scaledX).add(ys), scale2);
-             } else {
-                 BigInteger bigsum = bigMultiplyPowerTen(xs,raise).add(ys);
-                 return ((xs^ys)>=0) ? // same sign test
-@@ -5262,7 +5459,12 @@
-             int raise = checkScale(ys,sdiff);
-             long scaledY = longMultiplyPowerTen(ys, raise);
-             if (scaledY != INFLATED) {
--                return add(xs, scaledY, scale1);
-+                // Inlined add(xs, scaledY, scale1): eliminates recursive call
-+                long sum = xs + scaledY;
-+                if (((xs ^ sum) & (scaledY ^ sum)) >= 0) {
-+                    return BigDecimal.valueOf(sum, scale1);
-+                }
-+                return new BigDecimal(BigInteger.valueOf(xs).add(scaledY), scale1);
-             } else {
-                 BigInteger bigsum = bigMultiplyPowerTen(ys,raise).add(xs);
-                 return ((xs^ys)>=0) ?
-@@ -5318,6 +5520,9 @@
+@@ -5318,6 +5384,9 @@
      private static BigInteger bigMultiplyPowerTen(long value, int n) {
          if (n <= 0)
              return BigInteger.valueOf(value);
@@ -328,146 +113,7 @@
          return bigTenToThe(n).multiply(value);
      }
  
-@@ -5422,16 +5627,119 @@
-      */
-     private static BigDecimal divide(final long xs, int xscale, final long ys, int yscale, long preferredScale, MathContext mc) {
-         int mcp = mc.precision;
-+        // Original fast path (unchanged)
-         if(xscale <= yscale && yscale < 18 && mcp<18) {
-             return divideSmallFastPath(xs, xscale, ys, yscale, preferredScale, mc);
-         }
-+        
-+        // ========== NEW: Lean extended divide fast path ==========
-+        // Strategy: only attempt optimizations with high success probability.
-+        // Overhead for fallthrough: 1 comparison + 1 multiply + 1 modulo (~3ns).
-+        if (xscale <= yscale && yscale < 18 && xs != INFLATED && ys != 0 && mcp >= 18) {
-+            int xraise = yscale - xscale;
-+            
-+            // Step 1: Exact division shortcut
-+            long scaledX;
-+            if (xraise == 0) {
-+                // Cheapest path: no scaling needed
-+                if (xs % ys == 0) {
-+                    long sclVal = preferredScale;
-+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
-+                        return doRound(valueOf(xs / ys, (int)sclVal), mc);
-+                    }
-+                }
-+                scaledX = xs;
-+            } else {
-+                scaledX = longMultiplyPowerTen(xs, xraise);
-+                if (scaledX != INFLATED && scaledX % ys == 0) {
-+                    long sclVal = preferredScale + yscale - xscale;
-+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
-+                        return doRound(valueOf(scaledX / ys, (int)sclVal), mc);
-+                    }
-+                }
-+            }
-+            
-+            // Step 2: For non-exact, only try 128-bit split path when viable.
-+            // Quick viability check: compute effMcp and check if split can work.
-+            // Skip entirely if effMcp >= 36 (too large for split) or scaledX overflowed.
-+            if (scaledX != INFLATED) {
-+                int cmp = longCompareMagnitude(scaledX, ys);
-+                int yscaleAdj = (cmp > 0) ? yscale - 1 : yscale;
-+                int effMcp = (cmp > 0) ? mcp - 1 : mcp;
-+                
-+                if (effMcp >= 0 && effMcp < LONG_TEN_POWERS_TABLE.length) {
-+                    // effMcp < 19: try direct long then 128-bit
-+                    long scaledXs = (effMcp == 0) ? scaledX : longMultiplyPowerTen(scaledX, effMcp);
-+                    if (scaledXs != INFLATED) {
-+                        long sclVal = preferredScale + yscaleAdj - xscale + effMcp;
-+                        if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
-+                            return doRound(divideAndRound(scaledXs, ys, (int)sclVal,
-+                                mc.roundingMode.oldMode, checkScaleNonZero(preferredScale)), mc);
-+                        }
-+                    }
-+                    long sclVal = preferredScale + yscaleAdj - xscale + effMcp;
-+                    if (sclVal >= Integer.MIN_VALUE && sclVal <= Integer.MAX_VALUE) {
-+                        BigDecimal q = multiplyDivideAndRound(
-+                            LONG_TEN_POWERS_TABLE[effMcp], scaledX, ys,
-+                            (int)sclVal, mc.roundingMode.oldMode,
-+                            checkScaleNonZero(preferredScale));
-+                        if (q != null) {
-+                            return doRound(q, mc);
-+                        }
-+                    }
-+                } else if (effMcp >= LONG_TEN_POWERS_TABLE.length && effMcp < 36) {
-+                    // Split: 10^effMcp = 10^18 * 10^(effMcp-18)
-+                    int split = LONG_TEN_POWERS_TABLE.length - 1;
-+                    int remainder = effMcp - split;
-+                    long part2 = longMultiplyPowerTen(scaledX, remainder);
-+                    if (part2 != INFLATED) {
-+                        long absPart2 = Math.abs(part2);
-+                        long absYs = Math.abs(ys);
-+                        if (absYs > 0) {
-+                            long ratio = absPart2 / absYs;
-+                            // Must have enough precision: quotient (10^18 * part2 / ys)
-+                            // needs >= mcp significant digits.
-+                            // quotient >= 10^(mcp-1) → part2/ys >= 10^(mcp-19)
-+                            // For mcp<=19: always enough (10^18 gives 18+ digits)
-+                            // For mcp=20: need ratio >= 10
-+                            // For mcp=21: need ratio >= 100
-+                            boolean hasPrecision = (mcp <= 19);
-+                            if (!hasPrecision && mcp <= 27) {
-+                                long minRatio = LONG_TEN_POWERS_TABLE[mcp - 19];
-+                                hasPrecision = (ratio >= minRatio);
-+                            }
-+                            // Also must fit in unsigned long: ratio < ~18
-+                            if (hasPrecision && ratio < 18) {
-+                                long sclVal2 = preferredScale + yscaleAdj - xscale + effMcp;
-+                                if (sclVal2 >= Integer.MIN_VALUE && sclVal2 <= Integer.MAX_VALUE) {
-+                                    BigDecimal q = multiplyDivideAndRound(
-+                                        LONG_TEN_POWERS_TABLE[split], part2, ys,
-+                                        (int)sclVal2, mc.roundingMode.oldMode,
-+                                        checkScaleNonZero(preferredScale));
-+                                    if (q != null) {
-+                                        return doRound(q, mc);
-+                                    }
-+                                }
-+                            }
-+                        }
-+                    }
-+                }
-+            }
-+            // Fall through to slow path (overhead: ~3-5ns for exact check + maybe cmp)
-+        }
-+        
-+        return divideSlowPath(xs, xscale, ys, yscale, preferredScale, mc, mcp);
-+    }
-+
-+    /**
-+     * Slow path division — extracted from original divide() method.
-+     * Uses BigInteger when long arithmetic would overflow.
-+     */
-+    private static BigDecimal divideSlowPath(final long xs, int xscale, final long ys, int yscale, long preferredScale, MathContext mc, int mcp) {
-         if (compareMagnitudeNormalized(xs, xscale, ys, yscale) > 0) {// satisfy constraint (b)
-             yscale -= 1; // [that is, divisor *= 10]
-         }
-         int roundingMode = mc.roundingMode.oldMode;
--        // In order to find out whether the divide generates the exact result,
--        // we avoid calling the above divide method. 'quotient' holds the
--        // return BigDecimal object whose scale will be set to 'scl'.
-         int scl = checkScaleNonZero(preferredScale + yscale - xscale + mcp);
-         BigDecimal quotient;
-         if (checkScaleNonZero((long) mcp + yscale - xscale) > 0) {
-@@ -5445,7 +5753,6 @@
-             }
-         } else {
-             int newScale = checkScaleNonZero((long) xscale - mcp);
--            // assert newScale >= yscale
-             if (newScale == yscale) { // easy case
-                 quotient = divideAndRound(xs, ys, scl, roundingMode,checkScaleNonZero(preferredScale));
-             } else {
-@@ -5460,7 +5767,6 @@
-                 }
-             }
-         }
--        // doRound, here, only affects 1000000000 case.
-         return doRound(quotient,mc);
-     }
- 
-@@ -5574,36 +5880,126 @@
+@@ -5574,32 +5643,14 @@
      private static BigDecimal multiplyDivideAndRound(long dividend0, long dividend1, long divisor, int scale, int roundingMode,
                                                       int preferredScale) {
          int qsign = Long.signum(dividend0)*Long.signum(dividend1)*Long.signum(divisor);
@@ -497,253 +143,14 @@
 -        final long dividendLo = make64(d1,d0);
 -        // divide
 -        return divideAndRound128(dividendHi, dividendLo, divisor, qsign, scale, roundingMode, preferredScale);
-+        // Use Math.unsignedMultiplyHigh (JDK 18+) for 128-bit multiplication.
-+        // ARM AArch64: compiles to UMULH instruction (3-5 cycles)
-+        // x86-64: compiler reuses MUL high result (same instruction as low 64)
-+        // Replaces schoolbook 4-multiply + carry chain (~20 instructions)
++        // Use Math.unsignedMultiplyHigh (JDK 18+) for 128-bit multiply.
++        // ARM AArch64: UMULH single instruction (3-5 cyc)
++        // x86-64: compiler reuses MUL high 64 bits
 +        long a = Math.abs(dividend0);
 +        long b = Math.abs(dividend1);
 +        final long dividendHi = Math.unsignedMultiplyHigh(a, b);
 +        final long dividendLo = a * b;
-+        long absDsr = Math.abs(divisor);
-+        // ARM optimization: use compact 128-bit division for small divisors
-+        if (absDsr > 0 && absDsr < (1L << 32)) {
-+            BigDecimal q = divideAndRound128_compact(
-+                    dividendHi, dividendLo, absDsr, qsign,
-+                    scale, roundingMode, preferredScale);
-+            if (q != null) return q;
-+        }
-+        return divideAndRound128(dividendHi, dividendLo, absDsr, qsign, scale, roundingMode, preferredScale);
++        return divideAndRound128(dividendHi, dividendLo, Math.abs(divisor), qsign, scale, roundingMode, preferredScale);
      }
  
      private static final long DIV_NUM_BASE = (1L<<32); // Number base (32 bits).
- 
-+    /**
-+     * 128-bit overflow helper: when longMultiplyPowerTen overflows,
-+     * try unsignedMultiplyHigh + divideAndRound128 before falling back to BigInteger.
-+     * Extracted from divide(long,...) to keep that method lean for JIT inlining.
-+     *
-+     * @return BigDecimal result, or null if BigInteger fallback is needed
-+     */
-+    private static BigDecimal divide128Overflow(long dividend, long divisor, int raise,
-+                                                 int scale, int roundingMode) {
-+        long tenPow = LONG_TEN_POWERS_TABLE[raise];
-+        int qsign = Long.signum(dividend) * Long.signum(divisor);
-+        long absDiv = Math.abs(dividend);
-+        long absDsr = Math.abs(divisor);
-+        long lo = absDiv * tenPow;
-+        long hi = Math.unsignedMultiplyHigh(absDiv, tenPow);
-+        if (Long.compareUnsigned(hi, absDsr) >= 0) {
-+            return null; // Quotient doesn't fit in 64 bits
-+        }
-+        if (absDsr > 0 && absDsr < (1L << 32)) {
-+            return divideAndRound128_compact(hi, lo, absDsr, qsign, scale, roundingMode, scale);
-+        }
-+        return divideAndRound128(hi, lo, absDsr, qsign, scale, roundingMode, scale);
-+    }
-+
-+    /**
-+     * Specialized 128/64 division for small divisors (< 2^32).
-+     * Used by the division fast path when divisor has 2-5 decimal digits (10-99999).
-+     *
-+     * Simplified algorithm: since divisor fits in 32 bits and dividendHi < divisor,
-+     * we split the 128-bit dividend into two 64-bit limbs and do two 64/32 divisions,
-+     * avoiding Knuth's normalization and correction loops.
-+     *
-+     * ARM AArch64: 2 UDIV + 2 MSUB (8-16 cycles total)
-+     * vs divideAndRound128: 4 UDIV + 2 mulsub + correction loops (30-60 cycles)
-+     *
-+     * @return BigDecimal result, or null if quotient doesn't fit in signed long
-+     */
-+    private static BigDecimal divideAndRound128_compact(
-+            final long dividendHi, final long dividendLo,
-+            final long divisor, final int sign,
-+            final int scale, final int roundingMode,
-+            final int preferredScale) {
-+        // Precondition: divisor > 0 && divisor < 2^32
-+        // Precondition: dividendHi, dividendLo are unsigned (abs'd by caller)
-+
-+        // Quotient overflow check: if dividendHi >= divisor, quotient > 64 bits
-+        if (Long.compareUnsigned(dividendHi, divisor) >= 0) {
-+            return null; // Fall back to BigInteger
-+        }
-+
-+        // Step 1: Divide upper 96 bits → quotient high part
-+        // Since dividendHi < divisor < 2^32, (dividendHi << 32) doesn't overflow
-+        final long upper = (dividendHi << 32) | (dividendLo >>> 32);
-+        final long qHi = Long.divideUnsigned(upper, divisor);
-+        final long rem1 = Long.remainderUnsigned(upper, divisor);
-+
-+        // Step 2: Divide lower 64 bits → quotient low part
-+        // rem1 < divisor < 2^32, so (rem1 << 32) doesn't overflow
-+        final long lower = (rem1 << 32) | (dividendLo & 0xFFFFFFFFL);
-+        final long qLo = Long.divideUnsigned(lower, divisor);
-+        final long rem2 = Long.remainderUnsigned(lower, divisor);
-+
-+        // Check if quotient fits in signed long.
-+        // qHi fits in 32 bits (guaranteed by dividendHi < divisor),
-+        // but if bit 31 of qHi is set, (qHi << 32) sets bit 63 → overflow.
-+        // Equivalent to original divideAndRound128's check: (int)q1 < 0
-+        if ((int)qHi < 0) {
-+            return null; // Fall back to BigInteger
-+        }
-+
-+        final long q = (qHi << 32) | qLo;
-+        final long signedQ = q * sign;
-+
-+        // Fast exit for ROUND_DOWN (common in financial truncation)
-+        if (roundingMode == ROUND_DOWN) {
-+            if (scale == preferredScale) {
-+                return valueOf(signedQ, scale);
-+            }
-+            if (rem2 == 0) {
-+                return createAndStripZerosToMatchScale(signedQ, scale, preferredScale);
-+            }
-+            return valueOf(signedQ, scale);
-+        }
-+
-+        // Rounding
-+        if (rem2 != 0) {
-+            // For small divisors, 2*rem2 always fits in long (rem2 < 2^32)
-+            boolean increment = (2 * rem2 >= divisor)
-+                    ? commonNeedIncrement(roundingMode, sign, Long.compare(2 * rem2, divisor), (signedQ & 1L) != 0L)
-+                    : commonNeedIncrement(roundingMode, sign, -1, (signedQ & 1L) != 0L);
-+            return valueOf(increment ? signedQ + sign : signedQ, scale);
-+        } else {
-+            if (preferredScale != scale) {
-+                return createAndStripZerosToMatchScale(signedQ, scale, preferredScale);
-+            }
-+            return valueOf(signedQ, scale);
-+        }
-+    }
-+
-     /*
-      * divideAndRound 128-bit value by long divisor.
-      * returns null if quotient can't fit into long value;
-@@ -5737,6 +6133,80 @@
-         return (one+Long.MIN_VALUE) >= (two+Long.MIN_VALUE);
-     }
- 
-+    // ========== Fast Path Optimization: Multiplication Helpers ==========
-+
-+    /**
-+     * Fast check if both operands are suitable for fast multiply path.
-+     * For financial scenarios:
-+     * - Both numbers small (< 10^9)
-+     * - One very small (tax rate < 1000), other up to 10^13 (large amount x tax rate)
-+     */
-+    /**
-+     * Fast check if char array matches financial format.
-+     * Financial pattern: optional sign, 1-12 digits, optional decimal point,
-+     * exactly 2 (currency) or 4 (percentage) fraction digits.
-+     * @return scale if matches financial pattern, -1 otherwise
-+     */
-+    private static int checkFinancialFastPath(char[] in, int offset, int len) {
-+        if (len < 1 || len > 18) return -1;
-+        int pos = offset;
-+        int end = offset + len;
-+        // Check optional sign
-+        if (in[pos] == '+' || in[pos] == '-') {
-+            pos++;
-+            if (pos >= end) return -1;
-+        }
-+        int digitCount = 0;
-+        int decimalPos = -1;
-+        // Scan digits and decimal point
-+        for (; pos < end; pos++) {
-+            char c = in[pos];
-+            if (c >= '0' && c <= '9') {
-+                digitCount++;
-+                if (digitCount > 12) return -1;
-+            } else if (c == '.') {
-+                if (decimalPos != -1) return -1;
-+                decimalPos = digitCount;
-+            } else {
-+                return -1;
-+            }
-+        }
-+        if (digitCount == 0) return -1;
-+        // Determine scale
-+        if (decimalPos == -1) return 0;
-+        int fractionDigits = digitCount - decimalPos;
-+        if (fractionDigits == 2) return 2;
-+        if (fractionDigits == 4) return 4;
-+        return -1;
-+    }
-+
-+    /**
-+     * Fast parse financial format string.
-+     */
-+    private static BigDecimal parseFinancialFastPath(char[] in, int offset, int len,
-+                                                      int scale, MathContext mc) {
-+        int pos = offset;
-+        int end = offset + len;
-+        boolean isneg = false;
-+        // Handle sign
-+        if (in[pos] == '+' || in[pos] == '-') {
-+            isneg = (in[pos] == '-');
-+            pos++;
-+        }
-+        // Parse digits (ignore decimal point)
-+        long value = 0;
-+        for (; pos < end; pos++) {
-+            char c = in[pos];
-+            if (c >= '0' && c <= '9') {
-+                value = value * 10 + (c - '0');
-+            }
-+        }
-+        if (isneg) value = -value;
-+        BigDecimal result = valueOf(value, scale);
-+        return mc.precision == 0 ? result : result.round(mc);
-+    }
-+    // ========== Fast Path Optimization End ==========
-+
- 
-     // Compare Normalize dividend & divisor so that both fall into [0.1, 0.999...]
-     private static int compareMagnitudeNormalized(long xs, int xscale, long ys, int yscale) {
-@@ -5812,6 +6282,7 @@
-      * Multiplies two long values and rounds according {@code MathContext}
-      */
-     private static BigDecimal multiplyAndRound(long x, long y, int scale, MathContext mc) {
-+        // Standard path
-         long product = multiply(x, y);
-         if(product!=INFLATED) {
-             return doRound(product, scale, mc);
-@@ -5936,6 +6407,37 @@
-     }
- 
-     private static BigDecimal divide(long dividend, int dividendScale, long divisor, int divisorScale, int scale, int roundingMode) {
-+        // Fast path: compact values with small scale adjustment.
-+        // Tax system: caller guarantees divisors with 2-5 decimal places,
-+        // so we skip divisor-range checks and use signed division directly.
-+        if (dividend != INFLATED && divisor != INFLATED && divisor != 0) {
-+            int raise = scale + divisorScale - dividendScale;
-+            if (raise >= 0 && raise < LONG_TEN_POWERS_TABLE.length) {
-+                long scaledDividend = longMultiplyPowerTen(dividend, raise);
-+                if (scaledDividend != INFLATED) {
-+                    // ROUND_DOWN: Java's / truncates toward zero = ROUND_DOWN semantics
-+                    if (roundingMode == ROUND_DOWN) {
-+                        return valueOf(scaledDividend / divisor, scale);
-+                    }
-+                    return divideAndRound(scaledDividend, divisor, scale, roundingMode, scale);
-+                }
-+                // 128-bit overflow path: extract to helper to keep this method lean for JIT inlining
-+                BigDecimal q128 = divide128Overflow(dividend, divisor, raise, scale, roundingMode);
-+                if (q128 != null) {
-+                    return q128;
-+                }
-+            } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
-+                long scaledDivisor = longMultiplyPowerTen(divisor, -raise);
-+                if (scaledDivisor != INFLATED) {
-+                    if (roundingMode == ROUND_DOWN) {
-+                        return valueOf(dividend / scaledDivisor, scale);
-+                    }
-+                    return divideAndRound(dividend, scaledDivisor, scale, roundingMode, scale);
-+                }
-+            }
-+        }
-+
-+        // Standard path
-         if (checkScale(dividend,(long)scale + divisorScale) > dividendScale) {
-             int newScale = scale + divisorScale;
-             int raise = newScale - dividendScale;
