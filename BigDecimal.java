@@ -6075,23 +6075,6 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
      * - Both numbers small (< 10^9)
      * - One very small (tax rate < 1000), other up to 10^13 (large amount x tax rate)
      */
-    private static boolean isSmallMultiply(long x, long y) {
-        long absX = Math.abs(x);
-        long absY = Math.abs(y);
-        // Fast path 1: both small (< 10^9)
-        if (absX < 1_000_000_000L && absY < 1_000_000_000L) {
-            return true;
-        }
-        // Fast path 2: one very small (tax rate), other up to 10^13
-        if (absX < 1_000L && absY < 10_000_000_000_000L) {
-            return true;
-        }
-        if (absY < 1_000L && absX < 10_000_000_000_000L) {
-            return true;
-        }
-        return false;
-    }
-
     /**
      * Fast check if char array matches financial format.
      * Financial pattern: optional sign, 1-12 digits, optional decimal point,
@@ -6211,11 +6194,6 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     }
 
     private static BigDecimal multiply(long x, long y, int scale) {
-        // Fast path: financial small value optimization
-        if (isSmallMultiply(x, y)) {
-            return valueOf(x * y, scale);
-        }
-        // Standard path with overflow check
         long product = multiply(x, y);
         if(product!=INFLATED) {
             return valueOf(product,scale);
@@ -6238,14 +6216,6 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
      * Multiplies two long values and rounds according {@code MathContext}
      */
     private static BigDecimal multiplyAndRound(long x, long y, int scale, MathContext mc) {
-        // Fast path: no precision limit
-        if (mc.precision == 0 && isSmallMultiply(x, y)) {
-            return valueOf(x * y, scale);
-        }
-        // Fast path: financial small value
-        if (isSmallMultiply(x, y)) {
-            return doRound(x * y, scale, mc);
-        }
         // Standard path
         long product = multiply(x, y);
         if(product!=INFLATED) {

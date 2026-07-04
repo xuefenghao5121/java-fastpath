@@ -1,5 +1,5 @@
 --- /home/huawei/jdk25-test/jdk/src/java.base/share/classes/java/math/BigDecimal.java	2026-07-02 16:44:51.736053574 +0300
-+++ BigDecimal.java	2026-07-03 18:51:11.827645448 +0300
++++ BigDecimal.java	2026-07-04 16:32:36.441488211 +0300
 @@ -547,6 +547,17 @@
                  ("Bad offset or len arguments for char[] input.");
          }
@@ -516,7 +516,7 @@
      /*
       * divideAndRound 128-bit value by long divisor.
       * returns null if quotient can't fit into long value;
-@@ -5737,6 +6067,97 @@
+@@ -5737,6 +6067,80 @@
          return (one+Long.MIN_VALUE) >= (two+Long.MIN_VALUE);
      }
  
@@ -528,23 +528,6 @@
 +     * - Both numbers small (< 10^9)
 +     * - One very small (tax rate < 1000), other up to 10^13 (large amount x tax rate)
 +     */
-+    private static boolean isSmallMultiply(long x, long y) {
-+        long absX = Math.abs(x);
-+        long absY = Math.abs(y);
-+        // Fast path 1: both small (< 10^9)
-+        if (absX < 1_000_000_000L && absY < 1_000_000_000L) {
-+            return true;
-+        }
-+        // Fast path 2: one very small (tax rate), other up to 10^13
-+        if (absX < 1_000L && absY < 10_000_000_000_000L) {
-+            return true;
-+        }
-+        if (absY < 1_000L && absX < 10_000_000_000_000L) {
-+            return true;
-+        }
-+        return false;
-+    }
-+
 +    /**
 +     * Fast check if char array matches financial format.
 +     * Financial pattern: optional sign, 1-12 digits, optional decimal point,
@@ -614,35 +597,15 @@
  
      // Compare Normalize dividend & divisor so that both fall into [0.1, 0.999...]
      private static int compareMagnitudeNormalized(long xs, int xscale, long ys, int yscale) {
-@@ -5790,6 +6211,11 @@
-     }
- 
-     private static BigDecimal multiply(long x, long y, int scale) {
-+        // Fast path: financial small value optimization
-+        if (isSmallMultiply(x, y)) {
-+            return valueOf(x * y, scale);
-+        }
-+        // Standard path with overflow check
-         long product = multiply(x, y);
-         if(product!=INFLATED) {
-             return valueOf(product,scale);
-@@ -5812,6 +6238,15 @@
+@@ -5812,6 +6216,7 @@
       * Multiplies two long values and rounds according {@code MathContext}
       */
      private static BigDecimal multiplyAndRound(long x, long y, int scale, MathContext mc) {
-+        // Fast path: no precision limit
-+        if (mc.precision == 0 && isSmallMultiply(x, y)) {
-+            return valueOf(x * y, scale);
-+        }
-+        // Fast path: financial small value
-+        if (isSmallMultiply(x, y)) {
-+            return doRound(x * y, scale, mc);
-+        }
 +        // Standard path
          long product = multiply(x, y);
          if(product!=INFLATED) {
              return doRound(product, scale, mc);
-@@ -5936,6 +6371,37 @@
+@@ -5936,6 +6341,37 @@
      }
  
      private static BigDecimal divide(long dividend, int dividendScale, long divisor, int divisorScale, int scale, int roundingMode) {
