@@ -4516,7 +4516,8 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         if (qsign < 0)
             bi = bi.negate();
 
-        return new BigDecimal(bi, INFLATED, scale, 0);
+        // Use public constructor so JDK handles compact vs INFLATED properly
+        return new BigDecimal(bi, scale);
     }
 
     /**
