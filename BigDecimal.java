@@ -1764,6 +1764,19 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                                             int scale, int roundingMode) {
         int raise = scale + yscale - xscale;
         if (raise >= 0 && raise < LONG_TEN_POWERS_TABLE.length) {
+            // Power-of-10 shortcut: if xs == 10^k, then xs * 10^raise = 10^(raise+k)
+            // Saves 1 IMUL (3cyc on ARM Neoverse V2)
+            int xsPow = powerOfTen(xs);
+            if (xsPow >= 0 && raise + xsPow < LONG_TEN_POWERS_TABLE.length) {
+                long scaledDividend = LONG_TEN_POWERS_TABLE[raise + xsPow];
+                long q = scaledDividend / ys;
+                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
+                long r = scaledDividend % ys;
+                if (r == 0) return valueOf(q, scale);
+                int qsign = ((scaledDividend < 0) == (ys < 0)) ? 1 : -1;
+                boolean increment = needIncrement(ys, roundingMode, qsign, q, r);
+                return valueOf(increment ? q + qsign : q, scale);
+            }
             if (Math.abs(xs) <= THRESHOLDS_TABLE[raise]) {
                 long scaledDividend = xs * LONG_TEN_POWERS_TABLE[raise];
                 long q = scaledDividend / ys;
@@ -1775,6 +1788,17 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
                 return valueOf(increment ? q + qsign : q, scale);
             }
         } else if (raise < 0 && -raise < LONG_TEN_POWERS_TABLE.length) {
+            int ysPow = powerOfTen(ys);
+            if (ysPow >= 0 && -raise + ysPow < LONG_TEN_POWERS_TABLE.length) {
+                long scaledDivisor = LONG_TEN_POWERS_TABLE[-raise + ysPow];
+                long q = xs / scaledDivisor;
+                if (roundingMode == ROUND_DOWN) return valueOf(q, scale);
+                long r = xs % scaledDivisor;
+                if (r == 0) return valueOf(q, scale);
+                int qsign = ((xs < 0) == (scaledDivisor < 0)) ? 1 : -1;
+                boolean increment = needIncrement(scaledDivisor, roundingMode, qsign, q, r);
+                return valueOf(increment ? q + qsign : q, scale);
+            }
             if (Math.abs(ys) <= THRESHOLDS_TABLE[-raise]) {
                 long scaledDivisor = ys * LONG_TEN_POWERS_TABLE[-raise];
                 long q = xs / scaledDivisor;
@@ -1787,6 +1811,32 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
             }
         }
         return null; // fast path not applicable
+    }
+
+    /**
+     * Returns k if x == 10^k (0 <= k <= 18), otherwise -1.
+     * Enables power-of-10 shortcut: skip multiply, direct table lookup.
+     */
+    private static int powerOfTen(long x) {
+        if (x <= 0) return -1;
+        if (x <= 1000000000L) {
+            return switch ((int) x) {
+                case 1 -> 0; case 10 -> 1; case 100 -> 2; case 1000 -> 3;
+                case 10000 -> 4; case 100000 -> 5; case 1000000 -> 6;
+                case 10000000 -> 7; case 100000000 -> 8; case 1000000000 -> 9;
+                default -> -1;
+            };
+        }
+        if (x == 10000000000L) return 10;
+        if (x == 100000000000L) return 11;
+        if (x == 1000000000000L) return 12;
+        if (x == 10000000000000L) return 13;
+        if (x == 100000000000000L) return 14;
+        if (x == 1000000000000000L) return 15;
+        if (x == 10000000000000000L) return 16;
+        if (x == 100000000000000000L) return 17;
+        if (x == 1000000000000000000L) return 18;
+        return -1;
     }
 
     /**
@@ -4515,6 +4565,12 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
         if (n <= 0)
             return this.inflated();
 
+        // Power-of-10 shortcut: 10^k * 10^n = 10^(n+k)
+        // Skips BigInteger.multiply() entirely
+        int k = (intCompact != INFLATED) ? powerOfTen(intCompact) : -1;
+        if (k >= 0)
+            return bigTenToThe(n + k);
+
         if (intCompact != INFLATED)
             return bigTenToThe(n).multiply(intCompact);
         else
@@ -5464,6 +5520,9 @@ public class BigDecimal extends Number implements Comparable<BigDecimal> {
     private static BigInteger bigMultiplyPowerTen(long value, int n) {
         if (n <= 0)
             return BigInteger.valueOf(value);
+        int k = powerOfTen(value);
+        if (k >= 0)
+            return bigTenToThe(n + k);
         return bigTenToThe(n).multiply(value);
     }
 
